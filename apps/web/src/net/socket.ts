@@ -7,7 +7,8 @@ import { getToken } from './session';
 import { voice } from './voice';
 
 /** Aynı adresteki sunucuya bağlanır (geliştirmede Vite proxy'si aktarır) */
-export const socket = io({ autoConnect: false, auth: { token: getToken() } });
+// Pages gibi statik barındırmada oyun sunucusunun adresi derleme sırasında verilir; yoksa aynı kaynak kullanılır
+export const socket = io(import.meta.env.VITE_SERVER_URL || undefined, { autoConnect: false, auth: { token: getToken() } });
 
 export function request<T extends object = object>(event: string, payload: unknown = {}): Promise<Ack<T>> {
   return new Promise(resolve => {
