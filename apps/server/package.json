@@ -1,0 +1,22 @@
+{
+  "name": "@uno/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts --port 3001",
+    "start": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@uno/engine": "*",
+    "@uno/protocol": "*",
+    "express": "^5.3.0",
+    "socket.io": "^4.8.4",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.5",
+    "tsx": "^4.23.15"
+  }
+}

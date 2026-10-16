@@ -1,0 +1,9 @@
+node_modules
+dist
+*.log
+
+# ham kaynak klasörleri (uygulama kopyalarını apps/web/src/assets kullanır)
+/*Character/
+/Ch43_nonPBR Character/
+# yerel editör ayarları
+.claude/settings.local.json
