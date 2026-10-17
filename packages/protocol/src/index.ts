@@ -61,7 +61,11 @@ export const C2S = {
   chat: z.object({ text: z.string().trim().min(1).max(200) }),
   emote: z.object({ emote: z.enum(EMOTE_IDS) }),
   look: z.object({ yaw: z.number().min(-2).max(2), pitch: z.number().min(-1.5).max(1.5) }),
-  signal: z.object({ to: z.string().max(40), data: z.unknown() }),
+  // WebRTC sinyali küçük olmalı (SDP birkaç KB'ı geçmez); büyük veri diğer oyunculara iletilmez
+  signal: z.object({
+    to: z.string().max(64),
+    data: z.unknown().refine(v => JSON.stringify(v ?? null).length <= 16384, 'Sinyal çok büyük'),
+  }),
   empty: z.object({}).optional(),
 };
 

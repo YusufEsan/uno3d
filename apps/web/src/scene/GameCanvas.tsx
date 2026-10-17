@@ -1,6 +1,6 @@
 import { Suspense, useEffect, useMemo, useRef } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { PerformanceMonitor } from '@react-three/drei';
+import { PerformanceMonitor, useFBX } from '@react-three/drei';
 import { Bloom, EffectComposer, SMAA, Vignette } from '@react-three/postprocessing';
 import * as THREE from 'three';
 import { director } from '../game/director';
@@ -8,10 +8,36 @@ import { EYE_HEIGHT, SEAT_R, TABLE_Y, headPos, relativeOrder, seatFrame } from '
 import { socket } from '../net/socket';
 import { seatedPlayers, useApp, useQuality, type QualityLevel } from '../store/useApp';
 import { Avatar } from './Avatar';
-import { assignCharacters } from './characters';
+import { CHARACTERS, assignCharacters } from './characters';
 import { Chair } from './Chair';
 import { Room3D } from './Room3D';
 import { THEMES } from './themes';
+
+/**
+ * Tüm Mixamo karakterlerini görünmez bir köşede bir kez derler (gl.compile). Sahnedeki malzeme
+ * ve ışık kombinasyonlarının shader'ları böylece oyun başlamadan hazır olur.
+ */
+function ShaderWarmup() {
+  const gl = useThree(s => s.gl);
+  const scene = useThree(s => s.scene);
+  const camera = useThree(s => s.camera);
+  const group = useRef<THREE.Group>(null);
+  const models = CHARACTERS.filter(c => c.kind === 'mixamo').map(c => useFBX(c.url));
+  useEffect(() => {
+    const g = group.current;
+    if (!g) return;
+    gl.compile(scene, camera);
+    // derleme bitti: kaynaklar kalsın, model çizilmesin
+    g.visible = false;
+  }, [gl, scene, camera]);
+  return (
+    <group ref={group} position={[0, -200, 0]}>
+      {models.map((m, i) => (
+        <primitive key={i} object={m} />
+      ))}
+    </group>
+  );
+}
 
 export function GameCanvas() {
   const themeId = useApp(s => s.room?.theme ?? 'meyhane');
@@ -32,6 +58,10 @@ export function GameCanvas() {
       <FpsMeter />
       <Suspense fallback={null}>
         <Room3D theme={theme} quality={quality} />
+      </Suspense>
+      {/* karakterlerin shader'ları oyun başlamadan derlenir: ilk görünümde takılma olmasın */}
+      <Suspense fallback={null}>
+        <ShaderWarmup />
       </Suspense>
       <Seats />
       <primitive object={director.root} />

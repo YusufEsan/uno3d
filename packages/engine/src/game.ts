@@ -55,14 +55,24 @@ export function isPlayable(s: GameState, card: Card): boolean {
   return card.color === 'wild' || card.color === s.currentColor || card.value === top.value;
 }
 
+/**
+ * Wild Draw Four kuralı: elde şu anki renkten bir kart varsa +4 oynanamaz.
+ * Ceza birikirken (pendingDraw > 0) bu kontrol uygulanmaz.
+ */
+export function wild4Allowed(s: GameState, hand: Card[], card: Card): boolean {
+  if (card.value !== 'wild4' || s.pendingDraw > 0) return true;
+  return !hand.some(c => c.id !== card.id && c.color === s.currentColor);
+}
+
 export function playableIds(s: GameState, playerIndex: number): string[] {
   if (s.phase !== 'playing' || s.current !== playerIndex) return [];
   const hand = s.players[playerIndex].hand;
+  const ok = (c: Card) => isPlayable(s, c) && wild4Allowed(s, hand, c);
   if (s.drawnCardId) {
     const drawn = hand.find(c => c.id === s.drawnCardId);
-    return drawn && isPlayable(s, drawn) ? [drawn.id] : [];
+    return drawn && ok(drawn) ? [drawn.id] : [];
   }
-  return hand.filter(c => isPlayable(s, c)).map(c => c.id);
+  return hand.filter(ok).map(c => c.id);
 }
 
 /** Oynanan (veya ilk açılan) kartın etkisini uygular ve sırayı ilerletir. */
@@ -185,6 +195,7 @@ export function applyAction(state: GameState, playerId: string, action: Action):
       const card = player.hand[ci];
       if (s.drawnCardId && s.drawnCardId !== card.id) return fail('Sadece çektiğin kartı oynayabilirsin');
       if (!isPlayable(s, card)) return fail('Bu kart şu an oynanamaz');
+      if (!wild4Allowed(s, player.hand, card)) return fail('Elinde bu renkten kart varken +4 oynanamaz');
       if (card.color === 'wild' && !action.color) return fail('Bir renk seçmelisin');
 
       player.hand.splice(ci, 1);

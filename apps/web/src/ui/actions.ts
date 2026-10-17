@@ -1,5 +1,5 @@
 import type { Card, Color } from '@uno/engine';
-import { director } from '../game/director';
+import { withDirector } from '../game/directorLoader';
 import { request, sendAction } from '../net/socket';
 import { voice } from '../net/voice';
 import { useApp } from '../store/useApp';
@@ -13,7 +13,7 @@ export async function leaveRoom() {
   useApp.setState({ leaveAsk: false });
   await request('room:leave');
   voice.leaveAll();
-  director.clearTable();
+  withDirector(d => d.clearTable());
   history.replaceState(null, '', location.pathname);
   useApp.setState({ room: null, view: null, chat: [], seq: 0, counts: {}, unoFlags: {}, pendingWild: null });
 }
@@ -32,8 +32,13 @@ export function chooseWildColor(color: Color) {
 export const drawCard = () => void sendAction({ type: 'DRAW' });
 export const passTurn = () => void sendAction({ type: 'PASS' });
 
-director.onCardClick = playCard;
-director.onDeckClick = () => {
-  const v = useApp.getState().view;
-  if (v && v.phase === 'playing' && v.currentPlayerId === v.you && !v.drawnCardId) drawCard();
-};
+/** Masa motoruna tıklama bağlantılarını kurar; oyun ekranı açıldığında çağrılır (motor ilk ihtiyaçta yüklenir) */
+export function wireDirector() {
+  withDirector(d => {
+    d.onCardClick = playCard;
+    d.onDeckClick = () => {
+      const v = useApp.getState().view;
+      if (v && v.phase === 'playing' && v.currentPlayerId === v.you && !v.drawnCardId) drawCard();
+    };
+  });
+}

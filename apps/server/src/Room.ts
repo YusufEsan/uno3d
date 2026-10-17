@@ -219,6 +219,9 @@ export class Room {
     // oyun bittikten sonra çıkan botlara devredilmiş koltuklar boşalır
     const ids = this.occupied.map(s => s.playerId);
     if (ids.length < 2) return { ok: false, error: 'En az 2 oyuncu gerekli (bot ekleyebilirsin)' };
+    // bekleyen istekler oyun boyunca karar bekleyemez: sahiplerine bildirilip temizlenir
+    for (const p of this.pending.values()) p.socket.emit('room:rejected', { error: 'Oyun başladığı için istek iptal edildi' });
+    this.pending.clear();
     const { state, events } = createGame(ids, { stacking: this.stacking, turnSeconds: 30 }, Math.floor(Math.random() * 2 ** 31));
     this.game = state;
     this.status = 'playing';
@@ -379,7 +382,11 @@ export class Room {
     };
   }
 
+  /** Oda durumu herkese gider; bekleyen katılma istekleri (isimler) yalnızca oda sahibine */
   broadcastRoom() {
-    this.io.to(this.code).emit('room:state', this.state());
+    const full = this.state();
+    for (const [pid, socket] of this.sockets) {
+      socket.emit('room:state', pid === this.hostId ? full : { ...full, pending: [] });
+    }
   }
 }

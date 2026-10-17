@@ -11,7 +11,17 @@ const portArg = process.argv.indexOf('--port');
 const PORT = Number(portArg > 0 ? process.argv[portArg + 1] : (process.env.PORT ?? 3001));
 const app = express();
 const http = createServer(app);
-const io = new Server(http, { cors: { origin: true } });
+// izinli web adresleri: Pages sitesi ve yerel geliştirme; ALLOWED_ORIGINS ile değiştirilebilir
+const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? 'https://yusufesan.github.io,http://localhost:5173,http://localhost:3001')
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
+const io = new Server(http, {
+  cors: { origin: allowedOrigins, credentials: false },
+  // tek bir mesaj en fazla 100 KB olabilir: kötüye kullanılan büyük paketleri baştan keser
+  maxHttpBufferSize: 100_000,
+});
+app.disable('x-powered-by');
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true });

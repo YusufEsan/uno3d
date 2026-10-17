@@ -6,10 +6,12 @@ import { request, socket } from '../net/socket';
 import { voice } from '../net/voice';
 import { useApp } from '../store/useApp';
 import { SettingsButton } from './SettingsPanel';
-import { askLeave, chooseWildColor, drawCard, passTurn } from './actions';
+import { askLeave, chooseWildColor, drawCard, passTurn, wireDirector } from './actions';
 import { ChatPanel } from './ChatPanel';
 
 export function GameHud() {
+  // oyun ekranı açılınca masa motoruna kart tıklamaları bağlanır
+  useEffect(() => wireDirector(), []);
   const view = useApp(s => s.view);
   const room = useApp(s => s.room)!;
   const me = useApp(s => s.playerId);

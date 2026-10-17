@@ -35,9 +35,10 @@ export class RoomManager {
 
   private enter(room: Room, playerId: string, socket: Socket, profile: Profile): Ack<{ code: string }> {
     const current = this.roomOf(playerId);
-    if (current && current !== room) current.removeHuman(playerId);
+    // önce hedef odaya katılmayı dene: reddedilirse oyuncu eski odasında kalır
     const r = room.addHuman(playerId, socket, profile);
     if (!r.ok) return r;
+    if (current && current !== room) current.removeHuman(playerId);
     this.byPlayer.set(playerId, room);
     return { ok: true, code: room.code };
   }

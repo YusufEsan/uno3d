@@ -282,3 +282,18 @@ kbd { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: rgba(0,
 .lobby-card .setting-row { gap: 8px; }
 .lobby-card .setting-hint { font-size: 11px; }
 .seats li { padding-top: 6px; padding-bottom: 6px; }
+
+/* yükleme ekranı: dönen kartlar, akan ilerleme çubuğu */
+.loading { position: fixed; inset: 0; z-index: 80; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; background: radial-gradient(circle at 50% 40%, #241a15, #0b0806 70%); color: var(--text, #f5efe6); animation: fade-in .3s ease; }
+.loading h2 { margin: 6px 0 0; font-size: 20px; letter-spacing: -.01em; }
+.loading p { margin: 0; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.loading-cards { position: relative; width: 120px; height: 80px; }
+.loading-card { position: absolute; left: 50%; top: 50%; width: 44px; height: 62px; margin: -31px 0 0 -22px; border-radius: 8px; border: 3px solid #fff; box-shadow: 0 8px 20px rgba(0, 0, 0, .5); animation: loading-spin 1.6s ease-in-out infinite; }
+.loading-card:nth-child(1) { --r: -28deg; }
+.loading-card:nth-child(2) { --r: -9deg; }
+.loading-card:nth-child(3) { --r: 9deg; }
+.loading-card:nth-child(4) { --r: 28deg; }
+@keyframes loading-spin { 0%, 100% { transform: rotate(var(--r)) translateY(0); } 50% { transform: rotate(calc(var(--r) * -0.4)) translateY(-12px); } }
+.loading-bar { width: min(280px, 70vw); height: 6px; border-radius: 999px; background: rgba(255, 255, 255, .1); overflow: hidden; }
+.loading-bar span { display: block; height: 100%; border-radius: 999px; background: linear-gradient(90deg, #ff6b5e, var(--accent), #ff6b5e); background-size: 200% 100%; transition: width .3s ease; animation: loading-shimmer 1.2s linear infinite; }
+@keyframes loading-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }

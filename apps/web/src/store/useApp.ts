@@ -54,6 +54,10 @@ interface AppState {
   watchSelf: boolean;
   /** masaya yukarıdan bakış: kamera yükselir ve aşağı eğilir */
   topView: boolean;
+  /** karakter ve animasyon dosyalarının yüklenme oranı (0–1) */
+  assetProgress: number;
+  /** dosyalar hazır mı (oyuna girmek için) */
+  assetsReady: boolean;
   /** odadan çıkış onayı penceresi açık mı */
   leaveAsk: boolean;
   /** Kullanıcının grafik seçimi; "auto" iken autoLevel kare hızına göre değişir */
@@ -89,6 +93,8 @@ export const useApp = create<AppState>()(set => ({
   settingsOpen: false,
   watchSelf: false,
   topView: false,
+  assetProgress: 0,
+  assetsReady: false,
   leaveAsk: false,
   quality: savedQuality,
   autoLevel: 'medium',

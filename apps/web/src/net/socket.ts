@@ -1,7 +1,7 @@
 import { io } from 'socket.io-client';
 import type { Ack, ChatMessage, GamePacket, RoomState } from '@uno/protocol';
 import type { PlayerView } from '@uno/engine';
-import { director } from '../game/director';
+import { withDirector } from '../game/directorLoader';
 import { useApp, type ReactionName } from '../store/useApp';
 import { getToken } from './session';
 import { voice } from './voice';
@@ -28,7 +28,7 @@ socket.on('session', ({ playerId }: { playerId: string }) => set({ playerId }));
 socket.on('room:state', (room: RoomState) => {
   const prev = useApp.getState().room;
   set({ room });
-  if (prev?.status === 'playing' && room.status === 'lobby') director.clearTable();
+  if (prev?.status === 'playing' && room.status === 'lobby') withDirector(d => d.clearTable());
   voice.syncPeers(room);
 });
 
@@ -49,12 +49,12 @@ socket.on('game:events', (p: GamePacket) => {
     return;
   }
   set({ seq: p.seq, turnDeadline: p.turnEndsInMs ? Date.now() + p.turnEndsInMs : 0 });
-  director.enqueue(p.events, p.view);
+  withDirector(d => d.enqueue(p.events, p.view));
 });
 
 socket.on('game:sync', (p: { view: PlayerView; seq: number; turnEndsInMs: number }) => {
   set({ seq: p.seq, turnDeadline: p.turnEndsInMs ? Date.now() + p.turnEndsInMs : 0 });
-  director.reset(p.view);
+  withDirector(d => d.reset(p.view));
 });
 
 socket.on('emote', ({ from, emote }: { from: string; emote: ReactionName }) => {
