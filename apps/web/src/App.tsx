@@ -43,7 +43,7 @@ export function App() {
         </>
       )}
       {room && room.status !== 'lobby' && <GameHud />}
-      {room && !assetsReady && <LoadingScreen />}
+      <LoadingScreen show={!!room && !assetsReady} />
       <SettingsPanel />
       <LeaveConfirm />
       {toast && (

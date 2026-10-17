@@ -19,7 +19,9 @@ export interface Rig {
   height: number;
 }
 
-type BoneKey = 'hips' | 'head' | 'neck' | 'spine' | 'eyeL' | 'eyeR' | 'jaw' | 'handL' | 'handR' | 'armL' | 'foreL' | 'armR' | 'foreR';
+type BoneKey =
+  | 'hips' | 'head' | 'neck' | 'spine' | 'eyeL' | 'eyeR' | 'jaw' | 'handL' | 'handR' | 'armL' | 'foreL' | 'armR' | 'foreR'
+  | 'thighL' | 'shinL' | 'footL' | 'toeL' | 'thighR' | 'shinR' | 'footR' | 'toeR';
 export type Finger = 'Thumb' | 'Index' | 'Middle' | 'Ring' | 'Pinky';
 const FINGERS: Finger[] = ['Thumb', 'Index', 'Middle', 'Ring', 'Pinky'];
 
@@ -27,7 +29,7 @@ export type MorphKey = 'blink' | 'mouth' | 'happy' | 'angry' | 'sad' | 'surprise
 
 const BONE_PATTERNS: Record<BoneKey, RegExp[]> = {
   hips: [/hips$/i],
-  head: [/(^|[^a-z])head$/i],
+  head: [/(^|[^a-z]|mixamorig)head$/i],
   neck: [/neck$/i],
   spine: [/spine2$/i, /spine1$/i, /spine$/i, /torso(_\d)?$/i, /abdomen$/i],
   eyeL: [/lefteye$/i, /eye_?l$/i],
@@ -40,6 +42,15 @@ const BONE_PATTERNS: Record<BoneKey, RegExp[]> = {
   foreL: [/leftforearm$/i, /lowerarm_?l$/i, /forearm_?l$/i],
   armR: [/rightarm$/i, /upperarm_?r$/i],
   foreR: [/rightforearm$/i, /lowerarm_?r$/i, /forearm_?r$/i],
+  // bacaklar (Mixamo: LeftUpLeg, LeftLeg, LeftFoot, LeftToeBase): ayaklar zemine gömülmesin diye
+  thighL: [/leftupleg$/i, /thigh_?l$/i],
+  shinL: [/leftleg$/i, /calf_?l$/i, /shin_?l$/i],
+  footL: [/leftfoot$/i, /foot_?l$/i],
+  toeL: [/lefttoebase$/i, /toe_?l$/i],
+  thighR: [/rightupleg$/i, /thigh_?r$/i],
+  shinR: [/rightleg$/i, /calf_?r$/i, /shin_?r$/i],
+  footR: [/rightfoot$/i, /foot_?r$/i],
+  toeR: [/righttoebase$/i, /toe_?r$/i],
 };
 
 const MORPH_PATTERNS: Record<MorphKey, RegExp> = {
@@ -86,6 +97,12 @@ export function buildRig(
       if (opts.tint && /main/i.test(c.name)) c.color.set(opts.tint);
       // Mixamo FBX malzemeleri genelde Phong ve çok parlak gelir: biraz matlaştır
       if ((c as unknown as THREE.MeshPhongMaterial).isMeshPhongMaterial) (c as unknown as THREE.MeshPhongMaterial).shininess = 8;
+      // GLB'ye çevrilen modellerde Standard malzeme: deri ve kumaş metal gibi parlamasın
+      const std = c as THREE.MeshStandardMaterial;
+      if (std.isMeshStandardMaterial && !std.metalnessMap) {
+        std.metalness = Math.min(std.metalness, 0.05);
+        if (!std.roughnessMap) std.roughness = Math.max(std.roughness, 0.65);
+      }
       return c;
     });
     m.material = Array.isArray(m.material) ? mats : mats[0];

@@ -13,6 +13,11 @@ export const THEMES = [
   { id: 'casino', name: 'Kumarhane' },
   { id: 'ocean', name: 'Gece Denizi' },
   { id: 'desert', name: 'Çöl Gün Batımı' },
+  { id: 'clouds', name: 'Bulutların Üstü' },
+  { id: 'plane', name: 'Uçağın Üstü' },
+  { id: 'balloon', name: 'Sıcak Hava Balonu' },
+  { id: 'bus', name: 'Otobüs Yolculuğu' },
+  { id: 'boat', name: 'Tekne Gezisi' },
 ] as const;
 export type ThemeId = (typeof THEMES)[number]['id'];
 const THEME_IDS = THEMES.map(t => t.id) as [ThemeId, ...ThemeId[]];

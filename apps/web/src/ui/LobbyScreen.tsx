@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type CSSProperties } from 'react';
 import { MAX_SEATS, THEMES, type ThemeId } from '@uno/protocol';
 import { THEMES as SCENE_THEMES } from '../scene/themes';
 import { assignCharacters } from '../scene/characters';
@@ -113,16 +113,33 @@ export function LobbyScreen() {
             {THEMES.map(t => {
               const scene = SCENE_THEMES[t.id as ThemeId];
               const active = room.theme === t.id;
+              const vars = { '--felt': scene.felt, '--rim': scene.rim, '--wall': scene.wall, '--floor': scene.floor, '--lamp': scene.lamp.color } as CSSProperties;
               return (
                 <button
                   key={t.id}
-                  className={`theme-chip ${active ? 'active' : ''}`}
-                  disabled={!isHost}
-                  onClick={() => call('room:settings', { theme: t.id })}
+                  className={`theme-card ${active ? 'active' : ''}`}
+                  style={vars}
+                  disabled={!isHost && !active}
+                  onClick={() => isHost && !active && call('room:settings', { theme: t.id })}
                   aria-pressed={active}
+                  title={t.name}
                 >
-                  <span className="swatch" style={{ background: scene.felt, borderColor: scene.rim }} />
-                  <span>{t.name}</span>
+                  {/* temanın küçük sahne önizlemesi: lamba ışığı, masa, çuha ve kenar rengi */}
+                  <span className="theme-scene" aria-hidden="true">
+                    <span className="ts-beam" />
+                    <span className="ts-lamp" />
+                    <span className="ts-table">
+                      <span className="ts-card" />
+                    </span>
+                    {active && (
+                      <span className="theme-check">
+                        <svg viewBox="0 0 24 24" width="10" height="10">
+                          <path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      </span>
+                    )}
+                  </span>
+                  <span className="theme-name">{t.name}</span>
                 </button>
               );
             })}

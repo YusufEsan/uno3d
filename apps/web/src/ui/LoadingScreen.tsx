@@ -1,22 +1,132 @@
+import { useEffect, useState, type CSSProperties } from 'react';
+import { THEMES } from '@uno/protocol';
 import { useApp } from '../store/useApp';
 
-const CARDS = ['#e5322d', '#f5c400', '#2fa84f', '#1e6fd9'];
+/** Gösteride açılıp kapanan kartlar: renk ve yüz */
+const CARDS = [
+  { color: '#e5322d', face: '7' },
+  { color: '#f5c400', face: '+2' },
+  { color: '#2fa84f', face: '⇄' },
+  { color: '#1e6fd9', face: '⊘' },
+  { color: 'wild', face: '+4' },
+];
 
-/** Oyuna girmeden önce karakterler ve animasyonlar yüklenirken gösterilen animasyonlu ekran */
-export function LoadingScreen() {
+const TIPS = [
+  'Kartlar karıştırılıyor…',
+  'Karakterler sandalyelere yerleşiyor…',
+  '+4’ler bileniyor…',
+  'Masa siliniyor, çuha düzeltiliyor…',
+  'Rakipler poker yüzünü takıyor…',
+  '“UNO!” demeyi unutma…',
+  'Işıklar ayarlanıyor…',
+];
+
+/**
+ * Oyuna girerken karakterler, hareketler ve sahne yüklenirken gösterilen ekran.
+ * Yükleme bitince yumuşakça kaybolur (bir an ekranda kalıp kapanış animasyonu oynar).
+ */
+export function LoadingScreen({ show }: { show: boolean }) {
   const progress = useApp(s => s.assetProgress);
-  const pct = Math.round(progress * 100);
+  const themeId = useApp(s => s.room?.theme);
+  const [mounted, setMounted] = useState(show);
+  const [tip, setTip] = useState(0);
+  // ekranda gösterilen yüzde, gerçek ilerlemeye doğru akarak sayar
+  const [shown, setShown] = useState(0);
+
+  useEffect(() => {
+    if (show) {
+      setMounted(true);
+      return;
+    }
+    const t = setTimeout(() => setMounted(false), 650);
+    return () => clearTimeout(t);
+  }, [show]);
+
+  useEffect(() => {
+    if (!mounted) return;
+    const t = setInterval(() => setTip(i => (i + 1) % TIPS.length), 2200);
+    return () => clearInterval(t);
+  }, [mounted]);
+
+  const target = show ? progress : 1;
+  useEffect(() => {
+    if (!mounted) return;
+    let raf = 0;
+    const step = () => {
+      setShown(v => {
+        const next = v + (target - v) * 0.12;
+        return Math.abs(target - next) < 0.002 ? target : next;
+      });
+      raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [target, mounted]);
+
+  if (!mounted) return null;
+  const pct = Math.round(shown * 100);
+  const themeName = THEMES.find(t => t.id === themeId)?.name ?? 'Masa';
+
   return (
-    <div className="loading" role="status" aria-live="polite">
-      <div className="loading-cards" aria-hidden="true">
-        {CARDS.map((c, i) => (
-          <span key={c} className="loading-card" style={{ background: c, animationDelay: `${i * 0.18}s` }} />
-        ))}
+    <div className={`loader ${show ? '' : 'leaving'}`} role="status" aria-live="polite" aria-label={`Yükleniyor, yüzde ${pct}`}>
+      <div className="loader-bg" aria-hidden="true">
+        <span className="blob b1" />
+        <span className="blob b2" />
+        <span className="blob b3" />
+        <span className="blob b4" />
       </div>
-      <h2>Masa hazırlanıyor</h2>
-      <p>Karakterler ve hareketler yükleniyor · %{pct}</p>
-      <div className="loading-bar">
-        <span style={{ width: `${pct}%` }} />
+
+      <h1 className="logo loader-logo" aria-hidden="true">
+        UNO <span>3D</span>
+      </h1>
+
+      <div className="loader-stage" aria-hidden="true">
+        {CARDS.map((c, i) => (
+          <div
+            key={i}
+            className="lc"
+            style={
+              {
+                '--i': i,
+                '--x': `${(i - 2) * 56}px`,
+                '--r': `${(i - 2) * 13}deg`,
+                '--y': `${Math.abs(i - 2) * 11}px`,
+              } as CSSProperties
+            }
+          >
+            <div className="lc-inner">
+              <div className={`lc-face ${c.color === 'wild' ? 'wild' : ''}`} style={{ '--c': c.color } as CSSProperties}>
+                <span className="lc-corner tl">{c.face}</span>
+                <span className="lc-oval">
+                  <b>{c.face}</b>
+                </span>
+                <span className="lc-corner br">{c.face}</span>
+              </div>
+              <div className="lc-back">
+                <span>UNO</span>
+              </div>
+            </div>
+          </div>
+        ))}
+        <div className="loader-shadow" />
+      </div>
+
+      <div className="loader-text">
+        <div className="loader-theme">
+          <span className="dot" />
+          {themeName} hazırlanıyor
+        </div>
+        <div className="loader-tip" key={tip}>
+          {TIPS[tip]}
+        </div>
+      </div>
+
+      <div className="loader-progress">
+        <div className="loader-track">
+          <span className="loader-fill" style={{ width: `${pct}%` }} />
+          <span className="loader-runner" style={{ left: `${pct}%` }} />
+        </div>
+        <b className="loader-pct">{pct}%</b>
       </div>
     </div>
   );

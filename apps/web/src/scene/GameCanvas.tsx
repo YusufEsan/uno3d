@@ -1,6 +1,6 @@
 import { Suspense, useEffect, useMemo, useRef } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { PerformanceMonitor, useFBX } from '@react-three/drei';
+import { PerformanceMonitor } from '@react-three/drei';
 import { Bloom, EffectComposer, SMAA, Vignette } from '@react-three/postprocessing';
 import * as THREE from 'three';
 import { director } from '../game/director';
@@ -9,6 +9,7 @@ import { socket } from '../net/socket';
 import { seatedPlayers, useApp, useQuality, type QualityLevel } from '../store/useApp';
 import { Avatar } from './Avatar';
 import { CHARACTERS, assignCharacters } from './characters';
+import { useCharacterScene } from './characterModel';
 import { Chair } from './Chair';
 import { Room3D } from './Room3D';
 import { THEMES } from './themes';
@@ -22,7 +23,7 @@ function ShaderWarmup() {
   const scene = useThree(s => s.scene);
   const camera = useThree(s => s.camera);
   const group = useRef<THREE.Group>(null);
-  const models = CHARACTERS.filter(c => c.kind === 'mixamo').map(c => useFBX(c.url));
+  const models = CHARACTERS.filter(c => c.kind === 'mixamo').map(c => useCharacterScene(c.url));
   useEffect(() => {
     const g = group.current;
     if (!g) return;
@@ -47,7 +48,7 @@ export function GameCanvas() {
     <Canvas
       shadows
       dpr={1}
-      camera={{ fov: 58, near: 0.03, far: 40, position: [0, 2, 3] }}
+      camera={{ fov: 58, near: 0.03, far: 60, position: [0, 2, 3] }}
       gl={{ antialias: true, powerPreference: 'high-performance' }}
       onPointerDown={e => {
         if (e.button === 0) director.click();
@@ -171,10 +172,13 @@ function DirectorDriver() {
   return null;
 }
 
+/** fare kartların üstünde bu kadar saniye durunca kamera odaklanır (yavaşlar) */
+const FOCUS_DELAY = 0.45;
+
 /** Koltuğundan bakış: fare ekran kenarlarına gidince baş o yöne döner (Liar's Bar tarzı). */
 function CameraRig() {
   const camera = useThree(s => s.camera);
-  const look = useRef({ yaw: 0, pitch: 0, orbit: 0, endT: 0, topT: 0, sentYaw: 9, sentPitch: 9, lastSend: 0 });
+  const look = useRef({ yaw: 0, pitch: 0, dwell: 0, focus: 0, orbit: 0, endT: 0, topT: 0, sentYaw: 9, sentPitch: 9, lastSend: 0 });
   const euler = useMemo(() => new THREE.Euler(0, 0, 0, 'YXZ'), []);
   const orbit = useMemo(() => ({ pos: new THREE.Vector3(), q: new THREE.Quaternion(), m: new THREE.Matrix4(), center: new THREE.Vector3(0, 1.0, 0) }), []);
 
@@ -225,9 +229,15 @@ function CameraRig() {
     const dead = (v: number, d: number) => Math.sign(v) * Math.max(0, Math.abs(v) - d) / (1 - d);
     // serbest bakış: fare kenarlara gittikçe baş döner (sıra sende olsa bile); kartlar masada önünde kalır
     // en kenarda ~77°: yandaki oyunculara doğrudan bakılabilir
-    const yawTarget = -dead(px, 0.3) * 1.35;
+    // kamera her zaman akıcı döner (küçük ölü bölge); fare kartların üstünde bir süre durursa
+    // odak devreye girer ve kamera yavaşlayıp sabitlenir, kartlar ekranda kaymaz. Karttan çıkınca odak bırakılır.
+    const yawTarget = -dead(px, 0.08) * 1.35;
     const pitchTarget = Math.max(0, dead(py, 0.15)) * 0.4;
-    const k = Math.min(1, dt * 3.5);
+    const overCards = director.hoveringHand || (py < -0.25 && Math.abs(px) < 0.55);
+    l.dwell = overCards ? l.dwell + dt : 0;
+    const wantFocus = l.dwell > FOCUS_DELAY ? 1 : 0;
+    l.focus += (wantFocus - l.focus) * Math.min(1, dt * (wantFocus ? 3 : 10));
+    const k = Math.min(1, dt * 3.5) * (1 - l.focus * 0.92);
     l.yaw += (yawTarget - l.yaw) * k;
     l.pitch += (pitchTarget - l.pitch) * k;
 

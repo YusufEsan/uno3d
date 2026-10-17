@@ -124,6 +124,10 @@ export class TableDirector {
 
   private raycaster = new THREE.Raycaster();
   private hovered: Ent | null = null;
+  /** fare kendi kartlarından birinin üstünde mi (kamera odaklanması için) */
+  get hoveringHand() {
+    return !!this.hovered;
+  }
   private deckHovered = false;
 
   constructor() {
@@ -796,7 +800,12 @@ export class TableDirector {
     this.fx.burst(slot.pos, color);
     this.fx.shockwave(slot.pos, color);
     this.shake = Math.max(this.shake, 0.008);
-    if (this.pile.length > 28) this.disposeEnt(this.pile.shift()!);
+    if (this.pile.length > 28) {
+      this.disposeEnt(this.pile.shift()!);
+      // kalanlar bir kademe iner: bir sonraki kart üstteki kartla aynı yüksekliğe düşüp titreşmesin
+      const step = pileSlot('', 1).pos.y - pileSlot('', 0).pos.y;
+      for (const p of this.pile) p.root.position.y -= step;
+    }
   }
 
   private setColor(color: Color, big: boolean, instant = false) {

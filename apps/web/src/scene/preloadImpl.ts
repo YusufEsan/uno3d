@@ -1,9 +1,10 @@
 import * as THREE from 'three';
 import { useLoader } from '@react-three/fiber';
-import { useFBX } from '@react-three/drei';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
 import { useApp } from '../store/useApp';
 import { ANIMATIONS, CHARACTERS } from './characters';
+import { preloadCharacterScene } from './characterModel';
+import { MODELS, preloadCoreModels } from './models';
 
 let started = false;
 
@@ -14,7 +15,8 @@ let started = false;
 export async function preloadScene() {
   if (started) return;
   started = true;
-  const urls = Array.from(new Set([...Object.values(ANIMATIONS), ...CHARACTERS.filter(c => c.kind === 'mixamo').map(c => c.url)]));
+  // masa ve sandalye de sayılır; temaya özgü küçük dekor modelleri sahne açılınca arka planda iner
+  const urls = Array.from(new Set([...Object.values(ANIMATIONS), ...CHARACTERS.filter(c => c.kind === 'mixamo').map(c => c.url), MODELS.table, MODELS.chair]));
   let done = 0;
   // önce ağ: dosyalar tarayıcı önbelleğine iner, ilerleme sayılır
   await Promise.all(
@@ -33,7 +35,8 @@ export async function preloadScene() {
   const fbxUrls = Object.values(ANIMATIONS).filter(u => !/\.json(\?|$)/i.test(u));
   useLoader.preload(THREE.FileLoader, jsonUrls);
   useLoader.preload(FBXLoader, fbxUrls);
-  for (const c of CHARACTERS) if (c.kind === 'mixamo') useFBX.preload(c.url);
+  for (const c of CHARACTERS) if (c.kind === 'mixamo') preloadCharacterScene(c.url);
+  preloadCoreModels();
   await new Promise(r => setTimeout(r, 600));
   useApp.setState({ assetsReady: true });
 }

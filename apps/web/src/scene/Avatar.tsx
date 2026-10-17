@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useFrame, useLoader, useThree } from '@react-three/fiber';
-import { Html, useFBX, useGLTF } from '@react-three/drei';
+import { Html, useGLTF } from '@react-three/drei';
 import * as THREE from 'three';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
 import gsap from 'gsap';
@@ -10,6 +10,7 @@ import { TABLE_R, TABLE_Y } from '../game/layout';
 import { useApp, useQuality } from '../store/useApp';
 import { NameTag } from '../ui/NameTag';
 import { ANIMATIONS, REACTION_CLIPS, REACTION_FACE, ROBOT_URL, type CharacterDef } from './characters';
+import { useCharacterScene } from './characterModel';
 import { SafeBoundary } from './SafeBoundary';
 import { buildRig, poseGrip, rotateBoneInBodySpace, setMorph, solveArmIK, type MorphKey, type Rig } from './rig';
 import type { Thrower } from '../game/director';
@@ -17,6 +18,15 @@ import type { Thrower } from '../game/director';
 /** Oturan karakterin kalçasının hedefi (koltuk çerçevesinde): sandalye oturağının ortası */
 const SEAT_HIPS = { y: 0.56, z: -0.11 };
 /** Tepki sırasında kartların bırakıldığı nokta (koltuk çerçevesinde): masanın kenarının biraz içi */
+
+/**
+ * Başın koltuk çerçevesinde (+z masaya doğru) gidebileceği aralık: masa kenarı ~0.52 m önde, sandalye
+ * arkalığı ~0.43 m geride; başın yarıçapı ve sırttaki pay düşülür.
+ */
+const LEAN = { front: 0.3, back: -0.27 };
+
+/** tek seferlik hareketler bitmeden bu kadar saniye önce sonraki harekete geçilir */
+const SHOT_LEAD = 0.6;
 
 /** Boşta kıpırdanma havuzu: her karakter bu havuzdan kendine özgü birkaç hareket seçer */
 const FIDGET_POOL = ['talk', 'talk2', 'disbelief', 'disbelief2', 'disapproval', 'clap', 'thumbsup', 'point', 'laugh', 'yell2'];
@@ -80,6 +90,8 @@ function useMixamoClips() {
       ...groups.map((g, i) => ({ name: FBX_NAMES[i], clip: g.animations[0] })).filter(c => c.clip),
     ];
     alignHips(clips);
+    // sürekli dönen klipler (oturma, konuşma) döngü sınırında sıçramasın
+    for (const c of clips) if (/^(idle|talk)/i.test(c.name)) makeSeamless(c.clip);
     return clips;
   }, [texts, groups]);
 }
@@ -114,6 +126,34 @@ function alignHips(clips: { name: string; clip: THREE.AnimationClip }[]) {
   }
 }
 
+/**
+ * Mixamo klipleri döngü için hazırlanmamış: son kare ilk kareye uymaz ve her turda eller ~10 cm sıçrar.
+ * Klibin son `blend` saniyesi ilk karesine doğru yumuşakça eritilir; son kare ilk kareyle aynı olur.
+ */
+function makeSeamless(clip: THREE.AnimationClip, blend = 0.5) {
+  const dur = clip.duration;
+  const w = Math.min(blend, dur * 0.3);
+  const qa = new THREE.Quaternion();
+  const qb = new THREE.Quaternion();
+  for (const track of clip.tracks) {
+    const { times, values } = track;
+    const size = values.length / times.length;
+    if (times.length < 3 || size < 1) continue;
+    const isQuat = track instanceof THREE.QuaternionKeyframeTrack;
+    for (let i = 0; i < times.length; i++) {
+      const u = (times[i] - (dur - w)) / w;
+      if (u <= 0) continue;
+      const a = THREE.MathUtils.smootherstep(Math.min(1, u), 0, 1);
+      const o = i * size;
+      if (isQuat) {
+        qa.fromArray(values, o);
+        qb.fromArray(values, 0);
+        qa.slerp(qb, a).toArray(values, o);
+      } else for (let k = 0; k < size; k++) values[o + k] += (values[k] - values[o + k]) * a;
+    }
+  }
+}
+
 /** "disbelief" istenince disbelief, disbelief2, disbelief3… arasından rastgele biri */
 function pickVariant(actions: Record<string, THREE.AnimationAction>, base: string) {
   const matches = Object.keys(actions).filter(n => n === base || new RegExp(`^${base}\\d+$`).test(n));
@@ -121,7 +161,7 @@ function pickVariant(actions: Record<string, THREE.AnimationAction>, base: strin
 }
 
 function MixamoAvatar({ def, ...props }: Props & { def: CharacterDef }) {
-  const fbx = useFBX(def.url);
+  const fbx = useCharacterScene(def.url);
   const clips = useMixamoClips();
   const rig = useMemo(
     () => buildRig(fbx, clips, { kind: 'mixamo', targetHeight: SIT.mixamo.height, neckHeight: SIT.mixamo.neck }),
@@ -162,10 +202,15 @@ function LivingCharacter({
     throwT: -1,
     seated: false,
     release: null as (() => void) | null,
-    gestureLeft: 0,
     yaw: 0,
     pitch: 0,
     lean: 0,
+    /** el kol hareketlerinde kartların alçalma oranı (0 = göğüs önü, 1 = masaya yakın) */
+    cardsDown: 0,
+    /** yaslanma sınırının omurgaya uyguladığı düzeltme (radyan) */
+    leanFix: 0,
+    /** el düzeltmelerinin yumuşak ağırlıkları: masa ve gövde için sol/sağ */
+    fix: { tableL: 0, tableR: 0, torsoL: 0, torsoR: 0, footL: 0, footR: 0 },
     seed: Math.random() * 100,
   });
   const face = useRef<Partial<Record<MorphKey, number>>>({});
@@ -175,11 +220,40 @@ function LivingCharacter({
     return names.map(n => pickVariant(rig.actions, n)).filter((a): a is THREE.AnimationAction => !!a);
   }, [rig]);
 
+  /**
+   * Hareketler arası geçiş ağırlıkları elle yürütülür: sönmekte olan bir harekete geri dönülünce
+   * sıfırlanıp sıçramaz, ağırlıkların toplamı her karede 1'e tamamlanır (eksik kalırsa iskelet
+   * bağlama pozuna doğru kayar ve karakter bir an "takılmış" görünür).
+   */
+  const blend = useMemo(() => new Map<THREE.AnimationAction, { w: number; target: number; speed: number }>(), [rig]);
+  /** elle döndürülen kemiklerin son animasyon pozu (başta bağlama pozu) */
+  const animPose = useMemo(() => new Map([...rig.bindPose].map(([b, q]) => [b, q.clone()] as const)), [rig]);
+  const crossTo = (next: THREE.AnimationAction, dur: number, restart = false) => {
+    for (const b of blend.values()) {
+      b.target = 0;
+      b.speed = 1 / dur;
+    }
+    const cur = blend.get(next);
+    if (!cur || cur.w < 0.02 || restart) {
+      next.reset().play();
+      if (!cur) blend.set(next, { w: 0, target: 1, speed: 1 / dur });
+    }
+    const b = blend.get(next)!;
+    b.target = 1;
+    b.speed = 1 / dur;
+  };
+  /** tek seferlik hareketin bitişi: klip bitmeden SHOT_LEAD saniye önce onEnd çağrılır */
+  const shot = useRef<{ action: THREE.AnimationAction; left: number; onEnd: () => void } | null>(null);
+  const playOnce = (action: THREE.AnimationAction, loops: number, onEnd: () => void) => {
+    const len = (action.getClip().duration * loops) / Math.max(0.1, Math.abs(action.timeScale));
+    shot.current = { action, left: Math.max(0.3, len - SHOT_LEAD), onEnd };
+  };
   const fadeTo = (next: THREE.AnimationAction | null, dur = 1.1) => {
     const st = state.current;
     if (!next || next === st.base) return;
-    next.reset().setLoop(THREE.LoopRepeat, Infinity).fadeIn(dur).play();
-    st.base?.fadeOut(dur);
+    next.setLoop(THREE.LoopRepeat, Infinity);
+    next.clampWhenFinished = false;
+    crossTo(next, dur);
     st.base = next;
   };
 
@@ -199,13 +273,15 @@ function LivingCharacter({
       rig.idle.play();
       rig.idle.time = Math.random() * rig.idle.getClip().duration;
       rig.idle.timeScale = 0.85 + Math.random() * 0.3;
+      blend.set(rig.idle, { w: 1, target: 1, speed: 1 });
       st.base = rig.idle;
     }
     return () => {
       cancelAnimationFrame(compileId);
       rig.mixer.stopAllAction();
+      blend.clear();
     };
-  }, [rig, gl, scene, camera]);
+  }, [rig, gl, scene, camera, blend]);
 
   // kart atışı: kol geri çekilir, ileri savrulur; kart bırakma anında yığına uçar
   const thrower = useMemo<Thrower>(
@@ -235,21 +311,24 @@ function LivingCharacter({
     const action = (REACTION_CLIPS[reaction.name] ?? []).map(n => pickVariant(rig.actions, n)).find(Boolean);
     if (action && action !== st.base) {
       const loops = reaction.name === 'dance' ? 2 : 1;
-      // bitince son karede kalsın: oturma döngüsüne oradan yavaşça geçilir (sıçrama olmaz)
-      action.reset().setLoop(THREE.LoopRepeat, loops);
+      action.setLoop(THREE.LoopRepeat, loops);
       action.clampWhenFinished = true;
-      action.fadeIn(0.5).play();
-      st.base?.fadeOut(0.5);
+      crossTo(action, 0.5, true);
       st.reacting = true;
-      const done = (e: { action: THREE.AnimationAction }) => {
-        if (e.action !== action) return;
-        rig.mixer.removeEventListener('finished', done);
+      // klip bitmeden, hareket sürerken oturma döngüsüne geçilir: son karede donma ve sıçrama olmaz
+      playOnce(action, loops, () => {
         st.reacting = false;
-        action.fadeOut(0.8);
-        const back = st.base ?? rig.idle;
-        back?.reset().fadeIn(0.8).play();
-      };
-      rig.mixer.addEventListener('finished', done);
+        // konuşuyorsa konuşmaya, değilse oturmaya döner (yarım kalan el hareketine geri dönülmez)
+        const talking = st.talkTimer > 0 && rig.talks.length > 0;
+        const back = talking ? rig.talks[Math.floor(Math.random() * rig.talks.length)] : rig.idle;
+        st.inTalk = talking;
+        if (back) {
+          back.setLoop(THREE.LoopRepeat, Infinity);
+          back.clampWhenFinished = false;
+          crossTo(back, SHOT_LEAD + 0.2);
+          st.base = back;
+        }
+      });
     }
     const expr = REACTION_FACE[reaction.name] as MorphKey | undefined;
     if (expr) {
@@ -268,6 +347,7 @@ function LivingCharacter({
       tr: new THREE.Vector3(),
       pl: new THREE.Vector3(),
       pr: new THREE.Vector3(),
+      f: new THREE.Vector3(),
       q: new THREE.Quaternion(),
     }),
     [],
@@ -278,9 +358,32 @@ function LivingCharacter({
     const st = state.current;
     const t = frame.clock.elapsedTime + st.seed;
 
-    // animasyonların bıraktığı eklemeler birikmesin: elle döndürdüğümüz kemikleri bağlama pozuna al
-    for (const [bone, q] of rig.bindPose) bone.quaternion.copy(q);
+    // elle döndürdüğümüz kemikler (gövde, baş, kollar) her kare animasyonun bıraktığı poza geri alınır:
+    // eklemeler birikmez. Bağlama pozuna değil son animasyon pozuna dönülür, çünkü karıştırıcı değeri
+    // değişmeyen kemiğe yazmaz; bağlama pozuna sıfırlanan kemik o kare kollar açık çizilip sıçrıyordu.
+    for (const [bone, q] of animPose) bone.quaternion.copy(q);
+    // geçiş ağırlıkları: hedefe doğru sabit hızla ilerler, toplam 1'e ölçeklenir
+    let sum = 0;
+    for (const [a, b] of blend) {
+      b.w = b.target > b.w ? Math.min(b.target, b.w + b.speed * dt) : Math.max(b.target, b.w - b.speed * dt);
+      if (b.w <= 0 && b.target === 0) {
+        a.stop();
+        blend.delete(a);
+      } else sum += b.w;
+    }
+    for (const [a, b] of blend) a.setEffectiveWeight(sum > 0 ? b.w / sum : 0);
     rig.mixer.update(dt);
+    for (const [bone, q] of animPose) q.copy(bone.quaternion);
+
+    // tek seferlik hareket bitmek üzereyse sonraki harekete şimdiden geçilir
+    const sh = shot.current;
+    if (sh) {
+      sh.left -= dt;
+      if (sh.left <= 0) {
+        shot.current = null;
+        sh.onEnd();
+      }
+    }
 
     // --- sandalyeye oturtma: animasyonlar başka bir karakterden geldiği için bacak boyu farkı kalçayı
     // havada bırakabilir ya da sandalyeye gömebilir. Oturma döngüsündeyken kalça sandalyenin ortasına çekilir.
@@ -301,23 +404,30 @@ function LivingCharacter({
     const speaking = useApp.getState().speaking[seat.playerId] ?? 0;
     if (!st.reacting) {
       // konuşma klibinin rastgele bir yerinden başla: aynı hareketler tekrar etmesin
+      // (başlangıç noktası klibin sonuna çok yakın olmaz: hemen döngü sınırına gelinmesin)
       const startTalk = (fade: number) => {
-        const a = rig.talks[Math.floor(Math.random() * rig.talks.length)];
+        const others = rig.talks.filter(a => a !== st.base);
+        const a = (others.length ? others : rig.talks)[Math.floor(Math.random() * (others.length || rig.talks.length))];
+        if (a === st.base) return;
         fadeTo(a, fade);
-        a.time = Math.random() * a.getClip().duration;
+        if ((blend.get(a)?.w ?? 0) < 0.02) a.time = Math.random() * Math.max(0, a.getClip().duration - 2 * SHOT_LEAD - 1);
       };
       st.talkTimer = speaking > 0.12 ? Math.min(st.talkTimer + dt, 2) : Math.max(st.talkTimer - dt, 0);
+      const gesturing = !!shot.current;
       if (rig.talks.length && st.talkTimer > 0.35 && !st.inTalk) {
+        shot.current = null;
         startTalk(0.7);
         st.inTalk = true;
-        st.gestureLeft = 0;
-      } else if (st.inTalk && st.talkTimer === 0 && st.gestureLeft <= 0) {
+      } else if (st.inTalk && !gesturing && st.talkTimer === 0) {
         fadeTo(rig.idle, 1.2);
         st.inTalk = false;
+      } else if (st.inTalk && !gesturing && st.base && rig.talks.includes(st.base)) {
+        // konuşma klipleri döngü için hazırlanmadı: sona yaklaşınca başka bir konuşma klibine yumuşakça geçilir
+        const left = st.base.getClip().duration - st.base.time;
+        if (left < SHOT_LEAD && rig.talks.length > 1) startTalk(SHOT_LEAD);
       }
-      st.gestureLeft -= dt;
 
-      // boşta kıpırdanma: başka bir oturma varyantına geç ya da birkaç saniye el kol hareketi yap
+      // boşta kıpırdanma: başka bir oturma varyantına geç ya da tek seferlik bir el kol hareketi yap
       st.nextFidget -= dt;
       if (st.nextFidget <= 0 && !st.inTalk) {
         if (rig.idleVariants.length > 1) {
@@ -325,9 +435,17 @@ function LivingCharacter({
           fadeTo(options[Math.floor(Math.random() * options.length)], 1.4);
         } else if (favs.length) {
           const options = favs.filter(a => a !== st.base);
-          fadeTo(options[Math.floor(Math.random() * options.length)] ?? favs[0], 1.3);
+          const g = options[Math.floor(Math.random() * options.length)] ?? favs[0];
+          // el hareketi bir kez oynar ve bitmeden oturma döngüsüne döner (döngü sınırında sıçramaz)
+          g.setLoop(THREE.LoopOnce, 1);
+          g.clampWhenFinished = true;
+          crossTo(g, 1.0, true);
+          st.base = g;
           st.inTalk = true;
-          st.gestureLeft = 3 + Math.random() * 3;
+          playOnce(g, 1, () => {
+            fadeTo(rig.idle, SHOT_LEAD + 0.3);
+            st.inTalk = false;
+          });
         }
         st.nextFidget = 5 + Math.random() * 9;
       }
@@ -376,7 +494,20 @@ function LivingCharacter({
     // gövde: nefes + sırası gelince öne eğilme + atışta omuz dönüşü; baş ve gözler bakış yönünü paylaşır
     const breath = Math.sin(t * 1.6) * 0.012;
     // gövde dönüşü kartları tutan kollara binmesin diye küçük tutulur
-    rotateBoneInBodySpace(rig, rig.bones.spine, breath + st.lean * 0.1 + fling * 0.12, st.yaw * (human ? 0.2 : 0.05) - wind * 0.22 + fling * 0.12);
+    // yaslanma sınırı: bazı tepkiler (üzülme, gülme, şaşırma) gövdeyi çok öne ya da arkaya atar; baş masaya,
+    // kartlara ya da sandalye arkalığına girerdi. Baş koltuğa göre izin verilen aralığı aşarsa omurga taşan
+    // kadar ters yöne döndürülür (hareket korunur, yalnız fazlası kırpılır).
+    let leanTarget = 0;
+    if (group.current && rig.bones.head && rig.bones.spine) {
+      const headL = group.current.worldToLocal(rig.bones.head.getWorldPosition(tmpV.a));
+      const spineL = group.current.worldToLocal(rig.bones.spine.getWorldPosition(tmpV.b));
+      const lever = Math.max(0.25, Math.hypot(headL.y - spineL.y, headL.z - spineL.z));
+      if (headL.z > LEAN.front) leanTarget = -Math.asin(Math.min(1, (headL.z - LEAN.front) / lever));
+      else if (headL.z < LEAN.back) leanTarget = Math.asin(Math.min(1, (LEAN.back - headL.z) / lever));
+    }
+    const prevFix = Number.isFinite(st.leanFix) ? st.leanFix : 0;
+    st.leanFix = Number.isFinite(leanTarget) ? prevFix + (leanTarget * 1.15 - prevFix) * Math.min(1, dt * 22) : prevFix;
+    rotateBoneInBodySpace(rig, rig.bones.spine, breath + st.lean * 0.1 + fling * 0.12 + st.leanFix, st.yaw * (human ? 0.2 : 0.05) - wind * 0.22 + fling * 0.12);
     rotateBoneInBodySpace(rig, rig.bones.neck, st.pitch * 0.3, st.yaw * 0.3);
     rotateBoneInBodySpace(rig, rig.bones.head, st.pitch * 0.5 + speaking * 0.08 * Math.sin(t * 21), st.yaw * 0.45, Math.sin(t * 0.7) * 0.03);
     rotateBoneInBodySpace(rig, rig.bones.eyeL, st.pitch * 0.25, st.yaw * 0.3);
@@ -423,9 +554,16 @@ function LivingCharacter({
       }
       // kartlar göğüs önünde kalır (gövde eğilince onunla birlikte hareket eder)
       // tepkide eller serbest kalır: karakter kartları önüne, masaya kapalı bırakır; bitince geri alır
+      // el kol hareketlerinde (tepki, konuşma, kıpırdanma) kartlar masaya doğru alçalıp yatar:
+      // alkışlayan, gösteren eller kartların içinden geçmez
+      const gesturing = st.reacting || st.inTalk || st.base !== rig.idle;
+      st.cardsDown += ((gesturing ? 1 : 0) - st.cardsDown) * Math.min(1, dt * 3);
+      const cd = THREE.MathUtils.smootherstep(st.cardsDown, 0, 1);
+      chest.y = THREE.MathUtils.lerp(chest.y, TABLE_Y + 0.1, cd);
+      chest.z = THREE.MathUtils.lerp(chest.z, 0.56, cd);
       anchor.position.lerp(chest, Math.min(1, dt * 12));
-      // elde kartlar geriye yatık (karakter eline bakar); masada yüzü aşağı yatar
-      anchor.rotation.set(-0.6, 0, 0);
+      // kartlar neredeyse dik durur, karaktere doğru yalnız hafifçe yatık (masadakiler yelpazeyi düzgün görür)
+      anchor.rotation.set(THREE.MathUtils.lerp(-0.18, -0.3, cd), 0, 0);
       anchor.updateMatrix();
 
       if (canHold) {
@@ -454,33 +592,61 @@ function LivingCharacter({
       }
 
       // --- çarpışma: hangi animasyon oynarsa oynasın eller masanın içine girmez, yüzeyine kaldırılır ---
-      const keepAboveTable = (arm?: THREE.Bone, fore?: THREE.Bone, hand?: THREE.Bone, pole?: THREE.Vector3) => {
+      // düzeltmeler aç/kapa değil, yumuşak ağırlıkla devreye girer: sınırda el titremez
+      const ease = (key: keyof typeof st.fix, want: boolean) => {
+        st.fix[key] += ((want ? 1 : 0) - st.fix[key]) * Math.min(1, dt * 10);
+        return st.fix[key];
+      };
+      const keepAboveTable = (key: 'tableL' | 'tableR', arm?: THREE.Bone, fore?: THREE.Bone, hand?: THREE.Bone, pole?: THREE.Vector3) => {
         if (!arm || !fore || !hand || !pole) return;
         const p = hand.getWorldPosition(tmpV.a);
-        // masa kenarının kalın ahşap çerçevesi de dahil
-        const inside = Math.hypot(p.x, p.z) < TABLE_R + 0.2 && p.y < TABLE_Y + 0.05 && p.y > TABLE_Y - 0.3;
-        if (inside) solveArmIK(arm, fore, hand, tmpV.b.set(p.x, TABLE_Y + 0.06, p.z), pole, 1);
+        // masa kenarının kalın ahşap çerçevesi de dahil; etkinken sınır biraz genişler (histerezis)
+        const m = st.fix[key] > 0.5 ? 0.03 : 0;
+        const inside = Math.hypot(p.x, p.z) < TABLE_R + 0.2 + m && p.y < TABLE_Y + 0.05 + m && p.y > TABLE_Y - 0.3;
+        const w = ease(key, inside);
+        if (w > 0.01) solveArmIK(arm, fore, hand, tmpV.b.set(p.x, Math.max(p.y, TABLE_Y + 0.06), p.z), pole, w);
       };
       if (!canHold) {
         g.localToWorld(tmpV.pl.set(0.5, 0.55, 0.05));
         g.localToWorld(tmpV.pr.set(-0.5, 0.55, 0.05));
       }
-      keepAboveTable(armL, foreL, handL, tmpV.pl);
-      keepAboveTable(armR, foreR, handR, tmpV.pr);
+      keepAboveTable('tableL', armL, foreL, handL, tmpV.pl);
+      keepAboveTable('tableR', armR, foreR, handR, tmpV.pr);
       // el gövdenin içine girerse (kol animasyonları birbirine geçer) gövdeden dışarı itilir
-      const outOfTorso = (arm?: THREE.Bone, fore?: THREE.Bone, hand?: THREE.Bone, pole?: THREE.Vector3, side = 1) => {
+      const outOfTorso = (key: 'torsoL' | 'torsoR', arm?: THREE.Bone, fore?: THREE.Bone, hand?: THREE.Bone, pole?: THREE.Vector3, side = 1) => {
         if (!arm || !fore || !hand || !pole) return;
         const p = g.worldToLocal(hand.getWorldPosition(tmpV.a));
-        const inX = Math.abs(p.x) < 0.2;
-        const inZ = p.z > -0.05 && p.z < 0.3;
-        const inY = p.y > 0.8 && p.y < 1.25;
-        if (inX && inZ && inY) {
-          const target = tmpV.b.set(side * 0.24, p.y, Math.max(p.z, 0.32));
-          solveArmIK(arm, fore, hand, g.localToWorld(target), pole, 0.8);
+        const m = st.fix[key] > 0.5 ? 0.03 : 0;
+        const inside = Math.abs(p.x) < 0.2 + m && p.z > -0.05 - m && p.z < 0.3 + m && p.y > 0.8 - m && p.y < 1.25 + m;
+        const w = ease(key, inside) * 0.8;
+        if (w > 0.01) {
+          // hedef: elin gövde dışındaki en yakın noktası (yanda ve önde)
+          const target = tmpV.b.set(Math.abs(p.x) < 0.24 ? side * 0.24 : p.x, p.y, Math.max(p.z, 0.32));
+          solveArmIK(arm, fore, hand, g.localToWorld(target), pole, w);
         }
       };
-      outOfTorso(armL, foreL, handL, tmpV.pl, 1);
-      outOfTorso(armR, foreR, handR, tmpV.pr, -1);
+      outOfTorso('torsoL', armL, foreL, handL, tmpV.pl, 1);
+      outOfTorso('torsoR', armR, foreR, handR, tmpV.pr, -1);
+
+      // ayaklar zemine gömülmesin: kalça sandalyeye sabitlendiği için bacağı uzun ya da kısa iskeletten
+      // gelen kliplerde ayak ucu yerin altına inebiliyordu. Ayak zemine girerse diz bükülüp ayak kaldırılır.
+      const { thighL, shinL, footL, toeL, thighR, shinR, footR, toeR } = rig.bones;
+      const keepFeetUp = (key: 'footL' | 'footR', thigh?: THREE.Bone, shin?: THREE.Bone, foot?: THREE.Bone, toe?: THREE.Bone, side = 1) => {
+        if (!thigh || !shin || !foot) return;
+        const ankle = foot.getWorldPosition(tmpV.a);
+        const tipY = toe ? toe.getWorldPosition(tmpV.f).y : ankle.y;
+        // bilek zeminden en az ~6 cm, ayak ucu ~1.5 cm yukarıda olmalı
+        const low = Math.min(ankle.y - 0.06, tipY - 0.015);
+        const w = ease(key, low < (st.fix[key] > 0.5 ? 0.02 : 0));
+        if (w > 0.01) {
+          const target = tmpV.b.copy(ankle);
+          target.y += Math.max(0, -low);
+          // diz öne ve hafif dışa bakar
+          solveArmIK(thigh, shin, foot, target, g.localToWorld(tmpV.c.set(side * 0.15, 0.55, 0.9)), w);
+        }
+      };
+      keepFeetUp('footL', thighL, shinL, footL, toeL, 1);
+      keepFeetUp('footR', thighR, shinR, footR, toeR, -1);
     }
   });
 
