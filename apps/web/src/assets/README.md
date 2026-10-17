@@ -57,9 +57,28 @@ Dosyayı **tablodaki adla** `animations/` klasörüne kaydet:
 | `victory.fbx` | Sitting Victory | Kazanınca, dans emote'u | Önerilir |
 | `yell.fbx` | Sitting Yell | "UNO!" anı | Önerilir |
 | `wave.fbx` | Waving (oturarak olanı varsa onu) | El salla emote'u | İsteğe bağlı |
+| `standup.fbx`, `standup2.fbx` | Fist Pump, Standing Clap (oturarak başlayıp ayağa kalkanlar) | Kazanan bazen ayağa kalkıp sevinir | İsteğe bağlı |
 
 Eksik olanlar sorun değil: tepkiler sırayla yedek animasyonlara düşer (ör. `thumbsup` yoksa `clap`).
 Ayakta yapılan bir animasyon seçersen karakter o an ayağa kalkar.
+
+## Ham dosyaların yeri ve toplu aktarma
+
+Mixamo'dan indirilen ham `.fbx` dosyaları depo kökündeki `assets-src/` klasöründe toplanır (git'e girmez, büyük dosyalar):
+
+```
+assets-src/
+├─ animations/   ← bütün animasyon .fbx'leri (Sitting Clap.fbx, Fist Pump.fbx …)
+└─ characters/   ← karakter .fbx'leri
+```
+
+Yeni animasyon eklemek için dosyayı `assets-src/animations/` klasörüne koy ve aktar; adı kendiliğinden çevrilir
+(ör. "Sitting Laughing" → `laugh`), sonra klipleri küçült:
+
+```
+npm run import-mixamo -- assets-src/animations
+node scripts/optimize-anims.mjs
+```
 
 ## 4. Dene
 

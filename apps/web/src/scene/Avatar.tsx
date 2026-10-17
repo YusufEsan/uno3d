@@ -12,7 +12,7 @@ import { NameTag } from '../ui/NameTag';
 import { ANIMATIONS, REACTION_CLIPS, REACTION_FACE, ROBOT_URL, type CharacterDef } from './characters';
 import { useCharacterScene } from './characterModel';
 import { SafeBoundary } from './SafeBoundary';
-import { buildRig, poseGrip, rotateBoneInBodySpace, setMorph, solveArmIK, type MorphKey, type Rig } from './rig';
+import { bodyPenetration, buildRig, poseGrip, rotateBoneInBodySpace, setMorph, solveArmIK, type MorphKey, type Rig } from './rig';
 import type { Thrower } from '../game/director';
 
 /** Oturan karakterin kalçasının hedefi (koltuk çerçevesinde): sandalye oturağının ortası */
@@ -104,27 +104,40 @@ function useMixamoClips() {
  */
 function alignHips(clips: { name: string; clip: THREE.AnimationClip }[]) {
   const hipsTrack = (c: THREE.AnimationClip) => c.tracks.find(t => /hips\.position$/i.test(t.name));
-  const mean = (t: THREE.KeyframeTrack) => {
+  // oturma yüksekliği: kalçanın en alçakta olduğu karelerin ortalaması (ayağa kalkan kliplerde
+  // ayaktaki kareler sayılmaz, yalnız oturarak başlayıp bittiği kareler)
+  const seated = (t: THREE.KeyframeTrack) => {
+    let minY = Infinity;
+    for (let i = 1; i < t.values.length; i += 3) minY = Math.min(minY, t.values[i]);
     const m = [0, 0, 0];
-    const n = t.values.length / 3;
-    for (let i = 0; i < t.values.length; i += 3) for (let k = 0; k < 3; k++) m[k] += t.values[i + k] / n;
-    return m;
+    let n = 0;
+    for (let i = 0; i < t.values.length; i += 3) {
+      if (t.values[i + 1] > minY + 3) continue;
+      for (let k = 0; k < 3; k++) m[k] += t.values[i + k];
+      n++;
+    }
+    return m.map(v => v / Math.max(1, n));
   };
   const ref = clips.find(c => c.name === 'idle') ?? clips[0];
   const refTrack = ref && hipsTrack(ref.clip);
   if (!refTrack) return;
-  const target = mean(refTrack);
-  for (const { clip } of clips) {
+  const target = seated(refTrack);
+  for (const { name, clip } of clips) {
     const t = hipsTrack(clip);
     if (!t || t === refTrack) continue;
-    const m = mean(t);
+    const m = seated(t);
+    // ayağa kalkarken kalça ~30 cm öne gider: masa önünde durduğu için bu ileri hareket kısılır
+    const forward = isStandingClip(name) ? 0.4 : 1;
     // yalnız yükseklik (y) ve ileri-geri (z): yana kayma hareketin parçası olabilir
     for (let i = 0; i < t.values.length; i += 3) {
       t.values[i + 1] += target[1] - m[1];
-      t.values[i + 2] += target[2] - m[2];
+      t.values[i + 2] = target[2] + (t.values[i + 2] - m[2]) * forward;
     }
   }
 }
+
+/** oturarak başlayıp ayağa kalkan, sevinip yerine oturan klipler (kazananın kutlaması) */
+const isStandingClip = (name: string) => /^standup\d*$/i.test(name);
 
 /**
  * Mixamo klipleri döngü için hazırlanmamış: son kare ilk kareye uymaz ve her turda eller ~10 cm sıçrar.
@@ -205,15 +218,21 @@ function LivingCharacter({
     yaw: 0,
     pitch: 0,
     lean: 0,
-    /** el kol hareketlerinde kartların alçalma oranı (0 = göğüs önü, 1 = masaya yakın) */
+    /** karakterin bir parçası kartların hizasına girince yelpazenin öne kayma miktarı (metre) */
     cardsDown: 0,
     /** yaslanma sınırının omurgaya uyguladığı düzeltme (radyan) */
     leanFix: 0,
-    /** el düzeltmelerinin yumuşak ağırlıkları: masa ve gövde için sol/sağ */
-    fix: { tableL: 0, tableR: 0, torsoL: 0, torsoR: 0, footL: 0, footR: 0 },
+    /** ayak düzeltmelerinin yumuşak ağırlıkları (zemin) */
+    fix: { footL: 0, footR: 0 },
+    /** ayaktayken gövdenin kaldırılma miktarı */
+    standLift: 0,
+    /** ellerin çarpışma kayması (yumuşatılmış, dünya uzayında) */
+    handOff: { L: new THREE.Vector3(), R: new THREE.Vector3() },
     seed: Math.random() * 100,
   });
   const face = useRef<Partial<Record<MorphKey, number>>>({});
+  /** modelin ayaklarını zemine oturtan yükseklik (buildRig); ayakta kaldırma bunun üstüne eklenir */
+  const rootBaseY = useMemo(() => rig.root.position.y, [rig]);
   // her karakterin kendi kıpırdanma seti ve temposu: aynı karakterler aynı hareketleri yapmasın
   const favs = useMemo(() => {
     const names = [...FIDGET_POOL].sort(() => Math.random() - 0.5).slice(0, 3);
@@ -269,6 +288,8 @@ function LivingCharacter({
     rig.mixer.update(0);
     for (const a of Object.values(rig.actions)) a.stop();
     const compileId = requestAnimationFrame(() => gl.compile(scene, camera));
+    // ilk kare oturma pozu hesaplanana kadar gizli: model bir an T pozunda, havada görünmesin
+    rig.root.visible = false;
     if (rig.idle) {
       rig.idle.play();
       rig.idle.time = Math.random() * rig.idle.getClip().duration;
@@ -297,6 +318,37 @@ function LivingCharacter({
     [rig, anchor],
   );
 
+  // geliştirme: animasyonları tek tek incelemek için window.__avatars[oyuncu] üzerinden klip oynatılır
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const w = window as unknown as { __avatars?: Record<string, unknown> };
+    w.__avatars ??= {};
+    w.__avatars[seat.playerId] = {
+      rig,
+      state: state.current,
+      group,
+      anchor,
+      play: (name: string) => {
+        const a = rig.actions[name];
+        if (!a) return false;
+        const st = state.current;
+        a.setLoop(THREE.LoopOnce, 1);
+        a.clampWhenFinished = true;
+        crossTo(a, 0.5, true);
+        st.base = a;
+        st.reacting = true;
+        playOnce(a, 1, () => {
+          st.reacting = false;
+          fadeTo(rig.idle, SHOT_LEAD + 0.2);
+        });
+        return a.getClip().duration;
+      },
+    };
+    return () => {
+      delete w.__avatars?.[seat.playerId];
+    };
+  }, [rig, seat.playerId, anchor]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // kartlar bu noktaya bağlanır
   useEffect(() => {
     director.setHandAnchor(seat.playerId, anchor, thrower);
@@ -308,9 +360,11 @@ function LivingCharacter({
   useEffect(() => {
     if (!reaction) return;
     const st = state.current;
-    const action = (REACTION_CLIPS[reaction.name] ?? []).map(n => pickVariant(rig.actions, n)).find(Boolean);
+    // kutlamada bazen ayağa kalkıp sevinir
+    const standUp = reaction.name === 'dance' && Math.random() < 0.5 ? pickVariant(rig.actions, 'standup') : undefined;
+    const action = standUp ?? (REACTION_CLIPS[reaction.name] ?? []).map(n => pickVariant(rig.actions, n)).find(Boolean);
     if (action && action !== st.base) {
-      const loops = reaction.name === 'dance' ? 2 : 1;
+      const loops = reaction.name === 'dance' && !standUp ? 2 : 1;
       action.setLoop(THREE.LoopRepeat, loops);
       action.clampWhenFinished = true;
       crossTo(action, 0.5, true);
@@ -348,6 +402,16 @@ function LivingCharacter({
       pl: new THREE.Vector3(),
       pr: new THREE.Vector3(),
       f: new THREE.Vector3(),
+      d: new THREE.Vector3(),
+      e: new THREE.Vector3(),
+      oL: new THREE.Vector3(),
+      oR: new THREE.Vector3(),
+      h0: new THREE.Vector3(),
+      h1: new THREE.Vector3(),
+      h2: new THREE.Vector3(),
+      h3: new THREE.Vector3(),
+      h4: new THREE.Vector3(),
+      h5: new THREE.Vector3(),
       q: new THREE.Quaternion(),
     }),
     [],
@@ -398,6 +462,21 @@ function LivingCharacter({
       bodyGroup.position.y = THREE.MathUtils.clamp(bodyGroup.position.y, -0.4, 0.6);
       bodyGroup.position.z = THREE.MathUtils.clamp(bodyGroup.position.z, -0.4, 0.3);
       st.seated = true;
+    }
+    if (!rig.root.visible && (st.seated || !rig.bones.hips)) rig.root.visible = true;
+
+    // ayağa kalkınca: bacakları klipteki iskeletten uzun karakterlerde ayaklar zemine gömülüyordu. Kalça
+    // yükseldikçe (yalnız ayaktayken) gövde, en alçak ayak zeminin üstüne çıkacak kadar kaldırılır.
+    if (gg && rig.bones.hips) {
+      const { footL, footR, toeL, toeR } = rig.bones;
+      rig.root.updateMatrixWorld(true);
+      const hipsY = gg.worldToLocal(rig.bones.hips.getWorldPosition(tmpV.a)).y;
+      let low = Infinity;
+      for (const b of [toeL ?? footL, toeR ?? footR]) if (b) low = Math.min(low, gg.worldToLocal(b.getWorldPosition(tmpV.a)).y);
+      const standing = THREE.MathUtils.smoothstep(hipsY - st.standLift, SEAT_HIPS.y + 0.06, SEAT_HIPS.y + 0.18);
+      const want = Number.isFinite(low) ? Math.max(0, 0.03 - (low - st.standLift)) * standing : 0;
+      st.standLift += (want - st.standLift) * Math.min(1, dt * 10);
+      rig.root.position.y = rootBaseY + st.standLift;
     }
 
     // --- kıpırdanma ve konuşma döngüleri ---
@@ -552,18 +631,48 @@ function LivingCharacter({
         // her zaman masanın üstünde kalır
         chest.set(0, THREE.MathUtils.clamp(tmpV.a.y - 0.06, 0.93, 1.02), THREE.MathUtils.clamp(tmpV.a.z + 0.36, 0.4, 0.48));
       }
-      // kartlar göğüs önünde kalır (gövde eğilince onunla birlikte hareket eder)
-      // tepkide eller serbest kalır: karakter kartları önüne, masaya kapalı bırakır; bitince geri alır
-      // el kol hareketlerinde (tepki, konuşma, kıpırdanma) kartlar masaya doğru alçalıp yatar:
-      // alkışlayan, gösteren eller kartların içinden geçmez
-      const gesturing = st.reacting || st.inTalk || st.base !== rig.idle;
-      st.cardsDown += ((gesturing ? 1 : 0) - st.cardsDown) * Math.min(1, dt * 3);
-      const cd = THREE.MathUtils.smootherstep(st.cardsDown, 0, 1);
-      chest.y = THREE.MathUtils.lerp(chest.y, TABLE_Y + 0.1, cd);
-      chest.z = THREE.MathUtils.lerp(chest.z, 0.56, cd);
-      anchor.position.lerp(chest, Math.min(1, dt * 12));
-      // kartlar neredeyse dik durur, karaktere doğru yalnız hafifçe yatık (masadakiler yelpazeyi düzgün görür)
-      anchor.rotation.set(THREE.MathUtils.lerp(-0.18, -0.3, cd), 0, 0);
+      // kartlar her zaman göğüs önünde, elde ve dik durur (masaya bırakılmaz). Karakterin herhangi bir parçası
+      // (eller, parmak uçları, ön kollar, dirsekler, öne eğilen baş ya da gövde) yelpazenin hizasına gelirse
+      // yelpaze o parçanın önüne kayar, masanın kenarının üstüne kadar; parça çekilince yerine döner. Ölçü
+      // yelpazenin olağan yerine göre alınır, kaçarken titremez.
+      const restZ = chest.z;
+      let needZ = restZ;
+      const hs = rig.handSize;
+      const consider = (p: THREE.Vector3, r: number) => {
+        const l = g.worldToLocal(p);
+        if (Math.abs(l.x - chest.x) > 0.27 + r || l.y < chest.y - 0.24 - r || l.y > chest.y + 0.1 + r) return;
+        // yelpazenin arkasında kalması için gereken yer (çok gerideki parça yelpazeyi etkilemez)
+        if (l.z + r > restZ - 0.03) needZ = Math.max(needZ, l.z + r + 0.03);
+      };
+      for (const [side, hand, fore] of [['L', handL, foreL], ['R', handR, foreR]] as const) {
+        if (!hand) continue;
+        consider(hand.getWorldPosition(tmpV.a), hs * 0.25);
+        const m = rig.fingers[side].Middle;
+        if (m?.length) {
+          consider(m[0].getWorldPosition(tmpV.a), hs * 0.25);
+          consider(m[m.length - 1].getWorldPosition(tmpV.a), hs * 0.12);
+        }
+        if (fore) {
+          consider(fore.getWorldPosition(tmpV.a), 0.045);
+          consider(fore.getWorldPosition(tmpV.a).lerp(hand.getWorldPosition(tmpV.b), 0.5), 0.04);
+        }
+      }
+      // baş ve göğüs: öne eğilen tepkilerde (üzülme, gülme) yüz ve göğüs kartlara girmesin
+      const headProxy = rig.proxies.find(px => px.bone === rig.bones.head);
+      if (rig.bones.head) consider(rig.bones.head.getWorldPosition(tmpV.a).add(tmpV.b.set(0, 0.09, 0)), headProxy ? Math.max(...headProxy.rf) : 0.12);
+      const chestProxy = rig.proxies.find(px => px.bone === rig.bones.spine);
+      if (rig.bones.spine) consider(rig.bones.spine.getWorldPosition(tmpV.a), chestProxy ? Math.max(...chestProxy.rf) : 0.15);
+      // masanın kenarını çok aşmaz: dik kartların alt kenarı masaya değmez
+      const dodge = THREE.MathUtils.clamp(needZ - restZ, 0, 0.24);
+      // kaçış hızlı, geri dönüş yavaş
+      st.cardsDown += (dodge - st.cardsDown) * Math.min(1, dt * (dodge > st.cardsDown ? 24 : 3));
+      chest.z += st.cardsDown;
+      // yelpaze gövdeyi yumuşakça izler; öne kaçış gecikmesiz uygulanır
+      anchor.position.x += (chest.x - anchor.position.x) * Math.min(1, dt * 14);
+      anchor.position.y += (chest.y - anchor.position.y) * Math.min(1, dt * 14);
+      anchor.position.z = chest.z;
+      // neredeyse dik, karaktere doğru hafifçe yatık (masadakiler yelpazeyi düzgün görür)
+      anchor.rotation.set(-0.18, 0, 0);
       anchor.updateMatrix();
 
       if (canHold) {
@@ -591,45 +700,109 @@ function LivingCharacter({
         poseGrip(rig, 'R', handR, up(0.35, 1, 0.15), toBody, 0.45, st.hold * (1 - (st.throwT >= 0 ? 1 : 0)));
       }
 
-      // --- çarpışma: hangi animasyon oynarsa oynasın eller masanın içine girmez, yüzeyine kaldırılır ---
-      // düzeltmeler aç/kapa değil, yumuşak ağırlıkla devreye girer: sınırda el titremez
+      // --- el çarpışmaları: animasyonlar başka bir iskeletten geldiği için kolu kısa ya da uzun, eli büyük,
+      // göbekli karakterlerde eller gövdeye, başa, bacaklara, birbirine ve masaya giriyordu. Her karakterin
+      // kendi deri ölçüsünden çıkarılan şekillere göre her elin ne kadar kayması gerektiği hesaplanır; bu
+      // kayma kareden kareye yumuşatılıp tek bir kol IK'sıyla uygulanır (dirsek kendi düzleminde kalır).
+      // Kayma sıfıra inince poz birebir animasyondur; aç/kapa sıçraması olmaz.
+      const noFix = import.meta.env.DEV && (window as unknown as { __noFix?: boolean }).__noFix;
+      const handPoints = (side: 'L' | 'R', hand: THREE.Bone, out: THREE.Vector3[]) => {
+        const m = rig.fingers[side].Middle;
+        hand.getWorldPosition(out[0]);
+        if (m && m.length) {
+          m[0].getWorldPosition(out[1]);
+          const last = m[m.length - 1];
+          last.getWorldPosition(out[2]);
+          // parmak ucu: son eklemden bir eklem boyu ileride
+          if (m.length > 1) out[2].add(tmpV.f.subVectors(out[2], m[m.length - 2].getWorldPosition(tmpV.f)).multiplyScalar(0.8));
+          out[1].lerp(out[0], 0.45); // avuç ortası
+        } else {
+          out[1].copy(out[0]);
+          out[2].copy(out[0]);
+        }
+        return out;
+      };
+      // bilek, avuç ortası, parmak ucu için yarıçaplar
+      const radii = [hs * 0.22, hs * 0.24, hs * 0.1];
+      const ptsL = handL ? handPoints('L', handL, [tmpV.h0, tmpV.h1, tmpV.h2]) : null;
+      const ptsR = handR ? handPoints('R', handR, [tmpV.h3, tmpV.h4, tmpV.h5]) : null;
+      const offL = tmpV.oL.set(0, 0, 0);
+      const offR = tmpV.oR.set(0, 0, 0);
+      const lateral = tmpV.d.set(1, 0, 0).applyQuaternion(g.getWorldQuaternion(tmpV.q));
+
+      // gövde: noktaların itmeleri büyüklüğe göre ağırlıklı karıştırılır (en derin giren nokta baskın)
+      const bodyPush = (pts: THREE.Vector3[], out: THREE.Vector3) => {
+        let wsum = 0;
+        pts.forEach((p, i) => {
+          const pen = bodyPenetration(rig, p, radii[i], tmpV.e);
+          if (pen <= 0) return;
+          const w = pen ** 4;
+          out.addScaledVector(tmpV.e, w);
+          wsum += w;
+        });
+        if (wsum > 0) out.divideScalar(wsum);
+        // çok derin giriş büyük olasılıkla ölçü hatasıdır: el bir anda fırlamasın
+        if (out.length() > hs * 0.8) out.setLength(hs * 0.8);
+      };
+      if (rig.proxies.length) {
+        if (ptsL) bodyPush(ptsL, offL);
+        if (ptsR) bodyPush(ptsR, offR);
+      }
+
+      // eller birbirinin içinden geçmez: avuçlar birbirine yakınken (yükseklik ve derinlikte bir el boyundan
+      // az) sol avuç sağ avucun en az iki avuç kalınlığı kadar solunda kalır. Kolu uzun karakterlerde alkışlayan
+      // eller X şeklinde karşı tarafa geçiyordu. Eller uzaktayken itme söner (tek elle karşıyı göstermek serbest).
+      if (ptsL && ptsR) {
+        const v = tmpV.e.subVectors(ptsL[1], ptsR[1]).add(offL).sub(offR);
+        const sx = v.dot(lateral);
+        const perp = v.addScaledVector(lateral, -sx).length();
+        const w = 1 - THREE.MathUtils.smoothstep(perp, hs * 0.9, hs * 1.7);
+        const sep = Math.min(hs, Math.max(0, hs * 0.38 - sx) * w);
+        offL.addScaledVector(lateral, sep / 2);
+        offR.addScaledVector(lateral, -sep / 2);
+      }
+
+      // masa: eller (bilek, avuç, parmak uçları) masa tablasına girmez, yüzeyine kaldırılır. Masanın kenarından
+      // dışarıda ya da tablanın altında (kucakta) kalan el itilmez; geçişler yumuşak.
+      const tableLift = (pts: THREE.Vector3[], off: THREE.Vector3) => {
+        let lift = 0;
+        pts.forEach((p, i) => {
+          const y = p.y + off.y;
+          const need = TABLE_Y + radii[i] * 0.6 - y;
+          if (need <= 0) return;
+          const r = Math.hypot(p.x + off.x, p.z + off.z);
+          const w = (1 - THREE.MathUtils.smoothstep(r, TABLE_R + 0.04, TABLE_R + 0.1)) * (1 - THREE.MathUtils.smoothstep(need, 0.06, 0.11));
+          lift = Math.max(lift, need * w);
+        });
+        off.y += lift;
+      };
+      if (ptsL) tableLift(ptsL, offL);
+      if (ptsR) tableLift(ptsR, offR);
+
+      // yumuşatma: itme hızla devreye girer, daha yavaş bırakılır
+      const smooth = (cur: THREE.Vector3, want: THREE.Vector3) => {
+        const rate = want.lengthSq() > cur.lengthSq() ? 30 : 14;
+        cur.lerp(want, 1 - Math.exp(-dt * rate));
+      };
+      smooth(st.handOff.L, offL);
+      smooth(st.handOff.R, offR);
+      const reach = (arm?: THREE.Bone, fore?: THREE.Bone, hand?: THREE.Bone, delta?: THREE.Vector3, side = 1) => {
+        if (noFix || !arm || !fore || !hand || !delta || delta.lengthSq() < 1e-7) return;
+        const target = hand.getWorldPosition(tmpV.b).add(delta);
+        // dirsek bulunduğu düzlemde kalır (hafif dışa ve aşağı: kol düz olsa bile yön belirli)
+        const pole = fore.getWorldPosition(tmpV.c).add(tmpV.f.set(side * 0.04, -0.04, 0).applyQuaternion(g.getWorldQuaternion(tmpV.q)));
+        solveArmIK(arm, fore, hand, target, pole, 1);
+      };
+      reach(armL, foreL, handL, st.handOff.L, 1);
+      reach(armR, foreR, handR, st.handOff.R, -1);
+
+      // ayaklar zemine gömülmesin: kalça sandalyeye sabitlendiği için bacağı uzun ya da kısa iskeletten
+      // gelen kliplerde ayak ucu yerin altına inebiliyordu. Ayak zemine girerse diz bükülüp ayak kaldırılır.
+      // düzeltme aç/kapa değil, yumuşak ağırlıkla devreye girer: sınırda ayak titremez
       const ease = (key: keyof typeof st.fix, want: boolean) => {
         st.fix[key] += ((want ? 1 : 0) - st.fix[key]) * Math.min(1, dt * 10);
         return st.fix[key];
       };
-      const keepAboveTable = (key: 'tableL' | 'tableR', arm?: THREE.Bone, fore?: THREE.Bone, hand?: THREE.Bone, pole?: THREE.Vector3) => {
-        if (!arm || !fore || !hand || !pole) return;
-        const p = hand.getWorldPosition(tmpV.a);
-        // masa kenarının kalın ahşap çerçevesi de dahil; etkinken sınır biraz genişler (histerezis)
-        const m = st.fix[key] > 0.5 ? 0.03 : 0;
-        const inside = Math.hypot(p.x, p.z) < TABLE_R + 0.2 + m && p.y < TABLE_Y + 0.05 + m && p.y > TABLE_Y - 0.3;
-        const w = ease(key, inside);
-        if (w > 0.01) solveArmIK(arm, fore, hand, tmpV.b.set(p.x, Math.max(p.y, TABLE_Y + 0.06), p.z), pole, w);
-      };
-      if (!canHold) {
-        g.localToWorld(tmpV.pl.set(0.5, 0.55, 0.05));
-        g.localToWorld(tmpV.pr.set(-0.5, 0.55, 0.05));
-      }
-      keepAboveTable('tableL', armL, foreL, handL, tmpV.pl);
-      keepAboveTable('tableR', armR, foreR, handR, tmpV.pr);
-      // el gövdenin içine girerse (kol animasyonları birbirine geçer) gövdeden dışarı itilir
-      const outOfTorso = (key: 'torsoL' | 'torsoR', arm?: THREE.Bone, fore?: THREE.Bone, hand?: THREE.Bone, pole?: THREE.Vector3, side = 1) => {
-        if (!arm || !fore || !hand || !pole) return;
-        const p = g.worldToLocal(hand.getWorldPosition(tmpV.a));
-        const m = st.fix[key] > 0.5 ? 0.03 : 0;
-        const inside = Math.abs(p.x) < 0.2 + m && p.z > -0.05 - m && p.z < 0.3 + m && p.y > 0.8 - m && p.y < 1.25 + m;
-        const w = ease(key, inside) * 0.8;
-        if (w > 0.01) {
-          // hedef: elin gövde dışındaki en yakın noktası (yanda ve önde)
-          const target = tmpV.b.set(Math.abs(p.x) < 0.24 ? side * 0.24 : p.x, p.y, Math.max(p.z, 0.32));
-          solveArmIK(arm, fore, hand, g.localToWorld(target), pole, w);
-        }
-      };
-      outOfTorso('torsoL', armL, foreL, handL, tmpV.pl, 1);
-      outOfTorso('torsoR', armR, foreR, handR, tmpV.pr, -1);
-
-      // ayaklar zemine gömülmesin: kalça sandalyeye sabitlendiği için bacağı uzun ya da kısa iskeletten
-      // gelen kliplerde ayak ucu yerin altına inebiliyordu. Ayak zemine girerse diz bükülüp ayak kaldırılır.
       const { thighL, shinL, footL, toeL, thighR, shinR, footR, toeR } = rig.bones;
       const keepFeetUp = (key: 'footL' | 'footR', thigh?: THREE.Bone, shin?: THREE.Bone, foot?: THREE.Bone, toe?: THREE.Bone, side = 1) => {
         if (!thigh || !shin || !foot) return;

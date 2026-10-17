@@ -6,8 +6,9 @@ import { request, socket } from '../net/socket';
 import { voice } from '../net/voice';
 import { useApp } from '../store/useApp';
 import { SettingsButton } from './SettingsPanel';
-import { askLeave, chooseWildColor, drawCard, passTurn, wireDirector } from './actions';
+import { askLeave, chooseWildColor, drawCard, passTurn, shuffleHand, sortHand, wireDirector } from './actions';
 import { ChatPanel } from './ChatPanel';
+import { ThemePicker } from './ThemePicker';
 
 export function GameHud() {
   // oyun ekranı açılınca masa motoruna kart tıklamaları bağlanır
@@ -32,6 +33,8 @@ export function GameHud() {
       else if (e.key === 'd' && canDraw) drawCard();
       else if (e.key === 'p' && canPass) passTurn();
       else if (e.key === 'v') void voice.toggleMic();
+      else if (e.key === 's') sortHand();
+      else if (e.key === 'k') shuffleHand();
       else if (e.key === 'Escape') useApp.setState({ pendingWild: null });
     };
     window.addEventListener('keydown', onKey);
@@ -76,6 +79,7 @@ export function GameHud() {
         <ChatPanel />
       </div>
       <div className="bottom-right">
+        {view?.phase === 'playing' && view.hand.length > 1 && <HandTools />}
         <EmoteBar />
       </div>
 
@@ -175,6 +179,28 @@ function TurnTimer() {
   return <span className={`timer ${left <= 5 ? 'low' : ''}`}>{left}s</span>;
 }
 
+/** Elindeki kartları renge ve sayıya göre sırala ya da karıştır */
+function HandTools() {
+  return (
+    <div className="hand-tools">
+      <button className="hand-tool" onClick={() => sortHand()} title="Renge ve sayıya göre sırala (S)">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+          <path d="M4 6h10M4 12h7M4 18h4M17 5v14m0 0l-3-3m3 3l3-3" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+        <span>Sırala</span>
+        <kbd>S</kbd>
+      </button>
+      <button className="hand-tool" onClick={() => shuffleHand()} title="Kartları karıştır (K)">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+          <path d="M3 7h3.5c2 0 3.2 1 4.3 2.7l2.4 4.6c1.1 1.7 2.3 2.7 4.3 2.7H21m0 0l-2.5-2.5M21 17l-2.5 2.5M3 17h3.5c1.4 0 2.4-.5 3.2-1.4M21 7h-3.5c-1.4 0-2.4.5-3.2 1.4M21 7l-2.5-2.5M21 7l-2.5 2.5" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+        <span>Karıştır</span>
+        <kbd>K</kbd>
+      </button>
+    </div>
+  );
+}
+
 function EmoteBar() {
   return (
     <div className="emotes">
@@ -196,7 +222,7 @@ function ScoreBoard({ isHost }: { isHost: boolean }) {
   const sorted = [...seats].sort((a, b) => (room.scores[b.playerId] ?? 0) - (room.scores[a.playerId] ?? 0));
   return (
     // arka plan karartılmaz: arkada kamera masanın etrafında dönüp oyuncuların tepkilerini gösterir
-    <div className="overlay clear">
+    <div className="overlay clear end">
       <div className="panel scoreboard">
         <h2>{room.lastWinner === me ? 'Kazandın! 🎉' : `${winner?.name ?? '?'} kazandı`}</h2>
         <p className="muted">Bu elden +{room.lastPoints} puan</p>
@@ -208,6 +234,11 @@ function ScoreBoard({ isHost }: { isHost: boolean }) {
             </li>
           ))}
         </ol>
+        {/* rövanştan önce sahne değiştirilebilir; değişiklik arkadaki masada hemen görünür */}
+        <div className="scoreboard-themes">
+          <h3>{isHost ? 'Sonraki elin sahnesi' : 'Sahne'}</h3>
+          <ThemePicker compact />
+        </div>
         <div className="actions">
           {isHost ? (
             <button

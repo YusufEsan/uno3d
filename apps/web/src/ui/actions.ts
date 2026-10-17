@@ -42,3 +42,9 @@ export function wireDirector() {
     };
   });
 }
+
+/** Elindeki kartları renge ve sayıya göre sırala */
+export const sortHand = () => withDirector(d => d.sortHand());
+
+/** Elindeki kartları karıştır */
+export const shuffleHand = () => withDirector(d => d.shuffleHand());

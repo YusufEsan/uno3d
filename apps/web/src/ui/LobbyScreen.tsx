@@ -1,10 +1,10 @@
-import { useState, type CSSProperties } from 'react';
-import { MAX_SEATS, THEMES, type ThemeId } from '@uno/protocol';
-import { THEMES as SCENE_THEMES } from '../scene/themes';
+import { useState } from 'react';
+import { MAX_SEATS } from '@uno/protocol';
 import { assignCharacters } from '../scene/characters';
 import { request } from '../net/socket';
 import { useApp } from '../store/useApp';
 import { askLeave } from './actions';
+import { ThemePicker } from './ThemePicker';
 
 const LEVELS = [
   { id: 'easy', label: 'Kolay' },
@@ -109,41 +109,7 @@ export function LobbyScreen() {
 
         <section className="lobby-card">
           <h3>Masa teması</h3>
-          <div className="theme-grid">
-            {THEMES.map(t => {
-              const scene = SCENE_THEMES[t.id as ThemeId];
-              const active = room.theme === t.id;
-              const vars = { '--felt': scene.felt, '--rim': scene.rim, '--wall': scene.wall, '--floor': scene.floor, '--lamp': scene.lamp.color } as CSSProperties;
-              return (
-                <button
-                  key={t.id}
-                  className={`theme-card ${active ? 'active' : ''}`}
-                  style={vars}
-                  disabled={!isHost && !active}
-                  onClick={() => isHost && !active && call('room:settings', { theme: t.id })}
-                  aria-pressed={active}
-                  title={t.name}
-                >
-                  {/* temanın küçük sahne önizlemesi: lamba ışığı, masa, çuha ve kenar rengi */}
-                  <span className="theme-scene" aria-hidden="true">
-                    <span className="ts-beam" />
-                    <span className="ts-lamp" />
-                    <span className="ts-table">
-                      <span className="ts-card" />
-                    </span>
-                    {active && (
-                      <span className="theme-check">
-                        <svg viewBox="0 0 24 24" width="10" height="10">
-                          <path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" strokeWidth="3.2" strokeLinecap="round" strokeLinejoin="round" />
-                        </svg>
-                      </span>
-                    )}
-                  </span>
-                  <span className="theme-name">{t.name}</span>
-                </button>
-              );
-            })}
-          </div>
+          <ThemePicker />
         </section>
 
         <section className="lobby-card">

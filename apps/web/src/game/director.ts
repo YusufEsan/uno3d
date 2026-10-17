@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import gsap from 'gsap';
-import type { Card, Color, GameEvent, PlayerView } from '@uno/engine';
+import { COLORS, type Card, type Color, type GameEvent, type PlayerView } from '@uno/engine';
 import { COLOR_HEX, COLOR_NAME } from '../config';
 import { useApp } from '../store/useApp';
 import { backTexture, createCardGeometry, faceTexture } from './cardTextures';
@@ -45,6 +45,10 @@ interface Ent {
   fade: { value: number };
   /** Atış sırasında kartın takip ettiği el */
   follow: Thrower | null;
+  /** fare algılama: kartın yelpazedeki dinlenme yeri (kart kalkıp büyüse de yerinde kalır) */
+  pick: THREE.Mesh;
+  /** seçili kartın kalkmış ve büyümüş hâlini de kapsayan alan */
+  hit: THREE.Mesh;
 }
 
 /** Karakterin kart atma hareketi: Avatar sağlar, yönetici kartı eline göre uçurur */
@@ -60,6 +64,16 @@ interface Packet {
 }
 
 const GEO = createCardGeometry();
+// kartın kalkıp büyüdüğü hâli de kapsayan, görünmez algılama alanı (yukarı doğru uzatılmış)
+const HIT_GEO = new THREE.PlaneGeometry(CARD_W * 1.18, CARD_H * 1.16 + 0.09).translate(0, 0.045, 0);
+const HIT_MAT = new THREE.MeshBasicMaterial({ visible: false, side: THREE.DoubleSide });
+/**
+ * Kart yüzü ışığın bir kısmını kendisi verir: lamba altında düz duran kartlar beyaza kaçıp solmasın,
+ * gölgede de renkleri canlı kalsın. LIT ışıkla aydınlanan pay, GLOW kendi parlaklığı.
+ */
+const CARD_LIT = 0.6;
+const CARD_GLOW = 0.32;
+const PICK_GEO = new THREE.PlaneGeometry(CARD_W, CARD_H);
 let backMat: THREE.MeshStandardMaterial | null = null;
 
 /** Kart malzemesine "sönüklük" ekler: renkler korunur, kart biraz daha az parlak görünür (oynanamayan kartlar için) */
@@ -124,6 +138,8 @@ export class TableDirector {
 
   private raycaster = new THREE.Raycaster();
   private hovered: Ent | null = null;
+  /** bir önceki karede üzerinde durulan kart */
+  private lastHovered: Ent | null = null;
   /** fare kendi kartlarından birinin üstünde mi (kamera odaklanması için) */
   get hoveringHand() {
     return !!this.hovered;
@@ -208,12 +224,12 @@ export class TableDirector {
     view.discardTop.forEach(c => {
       const e = this.makeEnt(c);
       this.pile.push(e);
-      e.mat.color.setScalar(0.85);
       const s = pileSlot(c.id, this.pile.length - 1);
       e.root.position.copy(s.pos);
       e.root.quaternion.copy(s.quat);
       e.root.scale.setScalar(s.scale ?? 1);
     });
+    this.tintPile();
     this.drawCount = view.drawCount;
     this.updateDeck();
     this.direction = view.direction;
@@ -258,10 +274,17 @@ export class TableDirector {
     // izleme modunda kendi kartların görünmez ve tıklanamaz
     if (pointerActive && !useApp.getState().pendingWild && !this.hideOwnHand) {
       this.raycaster.setFromCamera(pointer, camera);
-      const hit = this.raycaster.intersectObjects(mine.map(e => e.front), false)[0];
+      // seçim kartların yelpazedeki sabit yerlerine göre yapılır: üzerine gelinen kart kalkıp büyüyünce
+      // komşusunun önüne geçse bile seçim değişmez (kartlar arasında gidip gelmez)
+      const hit = this.raycaster.intersectObjects(mine.map(e => e.pick), false)[0];
       this.hovered = hit ? (hit.object.userData.ent as Ent) : null;
+      // fare hiçbir kartın yerinde değilse ama az önce seçili kartın kalkmış hâlinin üstündeyse o kart seçili
+      // kalır: kartın kenarında durunca kart kalkıp fareden kaçtı diye bırakılmaz (yukarı aşağı titremez)
+      const prev = this.lastHovered;
+      if (!this.hovered && prev && mine.includes(prev) && this.raycaster.intersectObject(prev.hit, false).length > 0) this.hovered = prev;
       if (!this.hovered && this.drawCount > 0) this.deckHovered = this.raycaster.intersectObject(this.deck, false).length > 0;
     }
+    this.lastHovered = this.hovered;
     const hi = this.hovered ? mine.indexOf(this.hovered) : -1;
     const k = Math.min(1, dt * 14);
     mine.forEach((e, i) => {
@@ -356,15 +379,71 @@ export class TableDirector {
       this.reset(view);
       return;
     }
-    // elini sunucunun sırasıyla hizala
-    const order = new Map(view.hand.map((c, i) => [c.id, i]));
-    mine.sort((a, b) => (order.get(a.card!.id) ?? 0) - (order.get(b.card!.id) ?? 0));
+    // elini hizala: oyuncu sıraladıysa ya da karıştırdıysa o sıra korunur (yeni çekilen kartlar sona eklenir),
+    // değilse sunucunun sırası
+    this.orderHand(view.hand);
     this.relayout(view.you, 0.25);
     this.drawCount = view.drawCount;
     this.updateDeck();
     this.refreshHighlights();
     this.syncCounts();
     useApp.setState({ view });
+  }
+
+  /** Oyuncunun kendi seçtiği kart sırası (kart kimlikleri); null = sunucunun sırası */
+  private handOrder: string[] | null = null;
+
+  private orderHand(serverHand: Card[]) {
+    const mine = this.hands.get(this.you);
+    if (!mine) return;
+    const server = new Map(serverHand.map((c, i) => [c.id, i]));
+    const custom = new Map((this.handOrder ?? []).map((id, i) => [id, i]));
+    const rank = (e: Ent) => {
+      const id = e.card!.id;
+      const c = custom.get(id);
+      return c !== undefined ? c : custom.size + (server.get(id) ?? 0);
+    };
+    mine.sort((a, b) => rank(a) - rank(b));
+    if (this.handOrder) this.handOrder = mine.map(e => e.card!.id);
+  }
+
+  /** Elindeki kartları renge, sonra sayıya göre dizer (aksiyon ve joker kartları sonda) */
+  sortHand() {
+    const mine = this.hands.get(this.you);
+    if (!mine?.length || this.revealed) return;
+    const colorRank = (c: Card) => (c.color === 'wild' ? 9 : COLORS.indexOf(c.color));
+    const valueRank = (c: Card) => {
+      const n = Number(c.value);
+      return Number.isNaN(n) ? 10 + ['skip', 'reverse', 'draw2', 'wild', 'wild4'].indexOf(c.value) : n;
+    };
+    mine.sort((a, b) => colorRank(a.card!) - colorRank(b.card!) || valueRank(a.card!) - valueRank(b.card!));
+    this.handOrder = mine.map(e => e.card!.id);
+    sfx.deal();
+    this.shuffleLayout(0.012);
+  }
+
+  /** Elindeki kartları rastgele karıştırır */
+  shuffleHand() {
+    const mine = this.hands.get(this.you);
+    if (!mine || mine.length < 2 || this.revealed) return;
+    const before = mine.map(e => e.card!.id).join();
+    // aynı sıra çıkarsa yeniden karıştır: tıklayınca mutlaka değişsin
+    for (let k = 0; k < 5 && mine.map(e => e.card!.id).join() === before; k++) {
+      for (let i = mine.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [mine[i], mine[j]] = [mine[j], mine[i]];
+      }
+    }
+    this.handOrder = mine.map(e => e.card!.id);
+    sfx.shuffle();
+    this.shuffleLayout(0.025);
+  }
+
+  /** kartlar hafifçe havalanıp yeni yerlerine kayar (sıralama/karıştırma) */
+  private shuffleLayout(stagger: number) {
+    const list = this.hand(this.you);
+    list.forEach((e, i) => void this.moveTo(e, this.slotOf(this.you, i, list.length), { dur: 0.42, lift: 0.05, delay: i * stagger }));
+    this.refreshHighlights();
   }
 
   private play(ev: GameEvent, view: PlayerView): Promise<void> | void {
@@ -408,6 +487,7 @@ export class TableDirector {
   private async gameStarted(playerIds: string[], view: PlayerView) {
     this.clearAll();
     this.revealed = false;
+    this.handOrder = null;
     this.players = playerIds;
     this.you = view.you;
     playerIds.forEach(id => this.hands.set(id, []));
@@ -477,8 +557,8 @@ export class TableDirector {
     // elden gelen "oynanabilir" parıltısı ve kararma yığında kalmasın
     gsap.killTweensOf(e.mat);
     gsap.killTweensOf(e.mat.color);
-    e.mat.emissiveIntensity = 0;
-    e.mat.color.setScalar(1);
+    e.mat.emissiveIntensity = CARD_GLOW;
+    e.mat.color.setScalar(CARD_LIT);
     e.hover = 0;
     e.spread = 0;
     e.playable = false;
@@ -664,7 +744,8 @@ export class TableDirector {
     const list = this.hand(pid);
     list.forEach((e, i) => {
       if (except.includes(e)) return;
-      const slot = this.slotOf(pid, i, list.length);
+      // oyun bittiyse kartlar masada açık kalır (elin havadaki yerine geri dönmez)
+      const slot = this.revealed ? this.tableSpot(pid, i, list.length) : this.slotOf(pid, i, list.length);
       if (dur === 0) {
         e.tween?.kill();
         e.root.position.copy(slot.pos);
@@ -693,7 +774,7 @@ export class TableDirector {
     backMat ??= new THREE.MeshStandardMaterial({ map: backTexture(), roughness: 0.8 });
     const map = card ? faceTexture(card) : backTexture();
     // mat yüzey: lamba altında parlayıp yazıyı silmesin
-    const mat = new THREE.MeshStandardMaterial({ map, roughness: 1, metalness: 0, emissive: '#ffffff', emissiveMap: map, emissiveIntensity: 0 });
+    const mat = new THREE.MeshStandardMaterial({ map, color: new THREE.Color().setScalar(CARD_LIT), roughness: 1, metalness: 0, emissive: '#ffffff', emissiveMap: map, emissiveIntensity: CARD_GLOW });
     const root = new THREE.Group();
     const inner = new THREE.Group();
     const front = new THREE.Mesh(GEO, mat);
@@ -705,10 +786,14 @@ export class TableDirector {
     const fade = { value: 0 };
     addFade(mat, fade);
     inner.add(front, back);
-    root.add(inner);
+    const hit = new THREE.Mesh(HIT_GEO, HIT_MAT);
+    const pick = new THREE.Mesh(PICK_GEO, HIT_MAT);
+    pick.position.z = 0.0006;
+    root.add(inner, hit, pick);
     this.cards.add(root);
-    const ent: Ent = { root, inner, front, mat, card, tween: null, hover: 0, spread: 0, playable: false, lift: 0, fade, follow: null };
+    const ent: Ent = { root, inner, front, mat, card, tween: null, hover: 0, spread: 0, playable: false, lift: 0, fade, follow: null, pick, hit };
     front.userData.ent = ent;
+    pick.userData.ent = ent;
     return ent;
   }
 
@@ -787,9 +872,21 @@ export class TableDirector {
     });
   }
 
+  /**
+   * Yığının en üstteki kartı tam renkte ve hafifçe kendi ışığıyla parlar (lamba altında soluk görünmesin,
+   * oynanacak renk hemen seçilsin); alttakiler biraz kısılır, üstteki öne çıkar.
+   */
+  private tintPile() {
+    this.pile.forEach((p, i) => {
+      const top = i === this.pile.length - 1;
+      p.mat.color.setScalar(CARD_LIT * (top ? 1 : 0.9));
+      p.mat.emissiveIntensity = CARD_GLOW * (top ? 1.15 : 0.85);
+    });
+  }
+
   private async toPile(e: Ent, dur: number, lift: number, spin = 0) {
     this.pile.push(e);
-    e.mat.color.setScalar(0.85);
+    this.tintPile();
     const slot = pileSlot(e.card!.id, this.pile.length - 1);
     await this.moveTo(e, slot, { dur, lift, spin, pulse: 1.35 });
     // iniş: ezilip yaylanma, kıvılcım, şok dalgası, kamera sarsıntısı

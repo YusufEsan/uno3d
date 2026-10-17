@@ -2,8 +2,7 @@ node_modules
 dist
 *.log
 
-# ham kaynak klasörleri (uygulama kopyalarını apps/web/src/assets kullanır)
-/*Character/
-/Ch43_nonPBR Character/
+# ham Mixamo dosyaları (büyük): uygulama apps/web/src/assets altındaki küçültülmüş kopyaları kullanır
+/assets-src/
 # yerel editör ayarları
 .claude/settings.local.json

@@ -1,7 +1,8 @@
 import { Suspense, useEffect, useMemo, useRef } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { PerformanceMonitor } from '@react-three/drei';
-import { Bloom, EffectComposer, SMAA, Vignette } from '@react-three/postprocessing';
+import { Bloom, EffectComposer, HueSaturation, SMAA, ToneMapping, Vignette } from '@react-three/postprocessing';
+import { ToneMappingMode } from 'postprocessing';
 import * as THREE from 'three';
 import { director } from '../game/director';
 import { EYE_HEIGHT, SEAT_R, TABLE_Y, headPos, relativeOrder, seatFrame } from '../game/layout';
@@ -49,7 +50,8 @@ export function GameCanvas() {
       shadows
       dpr={1}
       camera={{ fov: 58, near: 0.03, far: 60, position: [0, 2, 3] }}
-      gl={{ antialias: true, powerPreference: 'high-performance' }}
+      // ACES renkleri soldurur; "nötr" ton eşleme parlak tonları sıkıştırırken renk doygunluğunu korur
+      gl={{ antialias: true, powerPreference: 'high-performance', toneMapping: THREE.NeutralToneMapping }}
       onPointerDown={e => {
         if (e.button === 0) director.click();
       }}
@@ -74,13 +76,18 @@ export function GameCanvas() {
       {quality === 'high' && (
         <EffectComposer multisampling={4}>
           <Bloom mipmapBlur luminanceThreshold={1.2} intensity={theme.bloom} />
-          <Vignette offset={0.25} darkness={0.7} />
+          {/* efekt zinciri renderer'ın ton eşlemesini kapatır: aynısı burada uygulanır */}
+          <ToneMapping mode={ToneMappingMode.NEUTRAL} />
+          <HueSaturation saturation={0.12} />
+          <Vignette offset={0.3} darkness={0.55} />
         </EffectComposer>
       )}
       {quality === 'medium' && (
         <EffectComposer multisampling={0}>
           <Bloom luminanceThreshold={1.2} intensity={theme.bloom * 0.8} />
-          <Vignette offset={0.25} darkness={0.7} />
+          <ToneMapping mode={ToneMappingMode.NEUTRAL} />
+          <HueSaturation saturation={0.12} />
+          <Vignette offset={0.3} darkness={0.55} />
           <SMAA />
         </EffectComposer>
       )}
@@ -216,12 +223,13 @@ function CameraRig() {
     }
     l.endT = 0;
 
-    // kendimi izleme: kamera masanın ortasından kendi koltuğuna bakar; kartlar kameranın arkasında kalır
+    // kendimi izleme: kamera masanın karşı tarafından, biraz yukarıdan kendi koltuğuna bakar: karakter
+    // sandalyesiyle birlikte bütün olarak görünür
     if (st.watchSelf) {
       const wp = tmpWatchPos;
-      wp.set(0, EYE_HEIGHT - 0.1, 0.05);
+      wp.set(0, EYE_HEIGHT + 0.6, -0.55);
       camera.position.lerp(wp, Math.min(1, dt * 6));
-      camera.lookAt(0, 1.05, SEAT_R);
+      camera.lookAt(0, 0.92, SEAT_R);
       return;
     }
     const px = pointerOnCanvas.active ? state.pointer.x : 0;

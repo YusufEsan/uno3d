@@ -33,6 +33,8 @@ const outAnims = path.join(root, 'apps/web/src/assets/animations');
 
 /** Mixamo adı → oyundaki ad. İlk eşleşen kural kullanılır. */
 const RULES = [
+  // ayağa kalkıp sevinme (oturarak başlar, ayakta sevinir, yerine oturur): kazananın kutlaması
+  [/stand(ing)?.*(clap|cheer)|fist ?pump/i, 'standup'],
   [/talk/i, 'talk'],
   [/laugh/i, 'laugh'],
   [/cheer/i, 'cheer'],
@@ -46,7 +48,6 @@ const RULES = [
   [/yell|shout|scream/i, 'yell'],
   [/wav/i, 'wave'],
   [/point/i, 'point'],
-  [/fist ?pump/i, 'fistpump'],
   [/idle|sitting|seated/i, 'idle'],
 ];
 

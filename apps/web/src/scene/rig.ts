@@ -17,6 +17,26 @@ export interface Rig {
   bindPose: Map<THREE.Bone, THREE.Quaternion>;
   morphs: Partial<Record<MorphKey, { mesh: THREE.Mesh; index: number }[]>>;
   height: number;
+  /** gövde, baş ve uyluklar için çarpışma şekilleri (modelin kendi ölçüsünden) */
+  proxies: BodyProxy[];
+  /** bilekten orta parmak köküne uzaklık (dünya ölçüsünde): el çarpışma yarıçapları buna göre */
+  handSize: number;
+}
+
+/**
+ * Bir kemiğe bağlı, kesiti elips olan kapsül. Uçlar ve eksenler kemiğin yerel uzayında tutulur,
+ * kemik dönünce şekil de döner. Yarıçaplar: yana (rx), öne (rf) ve arkaya (rb); göbek öne taşar.
+ */
+export interface BodyProxy {
+  bone: THREE.Bone;
+  a: THREE.Vector3;
+  b: THREE.Vector3;
+  ax: THREE.Vector3;
+  az: THREE.Vector3;
+  /** yarıçaplar şeklin alt (a) ve üst (b) yarısında ayrı: gövde boyna doğru incelir, göbek altta taşar */
+  rx: [number, number];
+  rf: [number, number];
+  rb: [number, number];
 }
 
 type BoneKey =
@@ -173,7 +193,184 @@ export function buildRig(
     .map(([, a]) => a);
   const talk = talks[0] ?? null;
 
-  return { root, mixer, actions, idle, idleVariants, talk, talks, bones, fingers, bindPose, morphs, height: opts.targetHeight };
+  const proxies = opts.kind === 'mixamo' ? buildBodyProxies(root, allBones) : [];
+  const middle = fingers.R.Middle?.[0];
+  const handSize = bones.handR && middle ? bones.handR.getWorldPosition(new THREE.Vector3()).distanceTo(middle.getWorldPosition(new THREE.Vector3())) : 0.12;
+
+  return { root, mixer, actions, idle, idleVariants, talk, talks, bones, fingers, bindPose, morphs, height: opts.targetHeight, proxies, handSize };
+}
+
+/** çarpışma şekli çıkarılan kemikler ve şeklin uzandığı alt kemik */
+const PROXY_BONES: [RegExp, RegExp][] = [
+  [/hips$/i, /spine$/i],
+  [/spine$/i, /spine1$/i],
+  [/spine1$/i, /spine2$/i],
+  [/spine2$/i, /neck$/i],
+  [/neck$/i, /head$/i],
+  [/(^|[^a-z]|mixamorig)head$/i, /headtop_end$/i],
+  [/leftupleg$/i, /leftleg$/i],
+  [/rightupleg$/i, /rightleg$/i],
+];
+
+const quantile = (xs: number[], q: number) => {
+  if (!xs.length) return 0;
+  const s = [...xs].sort((a, b) => a - b);
+  return s[Math.min(s.length - 1, Math.floor(q * s.length))];
+};
+
+/**
+ * Bağlama pozundaki deri noktalarından her gövde kemiği için bir kapsül çıkarır: noktalar en çok
+ * etkilendikleri kemiğe atanır, kemikten alt kemiğe uzanan eksene göre yana/öne/arkaya uzaklıkları ölçülür.
+ * Göbekli, iri kafalı ya da ince karakterlerin hepsi kendi şeklini alır.
+ */
+function buildBodyProxies(root: THREE.Object3D, allBones: THREE.Bone[]): BodyProxy[] {
+  root.updateMatrixWorld(true);
+  const defs = PROXY_BONES.map(([re, childRe]) => {
+    const bone = allBones.find(b => re.test(b.name));
+    if (!bone) return null;
+    const child = bone.children.find(c => (c as THREE.Bone).isBone && childRe.test(c.name)) as THREE.Bone | undefined;
+    const A = bone.getWorldPosition(new THREE.Vector3());
+    const B = child ? child.getWorldPosition(new THREE.Vector3()) : A.clone().add(new THREE.Vector3(0, 0.15, 0));
+    const half = () => ({ xs: [] as number[], fs: [] as number[], bs: [] as number[] });
+    return { bone, A, B, h: [half(), half()], ds: [] as number[], round: /upleg$/i.test(bone.name) };
+  });
+  const byBone = new Map<THREE.Bone, NonNullable<(typeof defs)[number]>>();
+  for (const d of defs) if (d) byBone.set(d.bone, d);
+
+  // bazı modellerde deri ek kemiklere bağlı (göbek, göğüs, yaka ya da kopya "_1" kemikleri): bunlar
+  // yukarı doğru en yakın gövde kemiğine sayılır; kol, bacak, el gibi uzuvlarda durulur
+  const cache = new Map<THREE.Object3D, (typeof defs)[number] | undefined>();
+  const owner = (bone: THREE.Object3D | undefined) => {
+    if (!bone) return undefined;
+    if (cache.has(bone)) return cache.get(bone);
+    let found: (typeof defs)[number] | undefined;
+    for (let b: THREE.Object3D | null = bone; b && (b as THREE.Bone).isBone; b = b.parent) {
+      const d = byBone.get(b as THREE.Bone);
+      if (d) {
+        found = d;
+        break;
+      }
+      // kopya kemik ("Spine_1") her zaman ebeveynine aittir
+      if (!/_\d+$/.test(b.name) && /(shoulder|arm|hand|leg|foot|toe|eye)$/i.test(b.name)) break;
+    }
+    cache.set(bone, found);
+    return found;
+  };
+  const v = new THREE.Vector3();
+  const ab = new THREE.Vector3();
+  const o = new THREE.Vector3();
+  root.traverse(obj => {
+    const m = obj as THREE.SkinnedMesh;
+    if (!m.isSkinnedMesh || !m.skeleton) return;
+    const pos = m.geometry.attributes.position;
+    const si = m.geometry.attributes.skinIndex;
+    const sw = m.geometry.attributes.skinWeight;
+    if (!pos || !si || !sw) return;
+    const step = Math.max(1, Math.floor(pos.count / 6000));
+    for (let i = 0; i < pos.count; i += step) {
+      let best = 0;
+      let bi = -1;
+      for (let k = 0; k < 4; k++) {
+        const w = sw.getComponent(i, k);
+        if (w > best) {
+          best = w;
+          bi = si.getComponent(i, k);
+        }
+      }
+      if (best < 0.5) continue;
+      const d = owner(m.skeleton.bones[bi]);
+      if (!d) continue;
+      m.getVertexPosition(i, v);
+      v.applyMatrix4(m.matrixWorld);
+      ab.subVectors(d.B, d.A);
+      const t = THREE.MathUtils.clamp(o.subVectors(v, d.A).dot(ab) / Math.max(1e-8, ab.lengthSq()), 0, 1);
+      o.subVectors(v, d.A).addScaledVector(ab, -t);
+      d.ds.push(o.length());
+      const h = d.h[t < 0.5 ? 0 : 1];
+      h.xs.push(Math.abs(o.x));
+      if (o.z > 0) h.fs.push(o.z);
+      else h.bs.push(-o.z);
+    }
+  });
+
+  const out: BodyProxy[] = [];
+  const inv = new THREE.Quaternion();
+  // yaka, pelerin gibi dışa açılan giysiler şekli şişirmesin: uç noktalar sayılmaz
+  const Q = 0.65;
+  for (const d of defs) {
+    if (!d || d.h[0].xs.length + d.h[1].xs.length < 12) continue;
+    d.bone.getWorldQuaternion(inv).invert();
+    // yarının biri boşsa diğerinin ölçüsü kullanılır
+    const halves = d.h;
+    const r = (pick: (h: (typeof halves)[0]) => number[], fallback?: [number, number]) =>
+      halves.map((h, i) => {
+        const xs = pick(h);
+        if (xs.length > 6) return quantile(xs, Q);
+        const other = pick(halves[1 - i]);
+        return other.length > 6 ? quantile(other, Q) : (fallback?.[i] ?? 0.05);
+      }) as [number, number];
+    // uyluk: kesiti yuvarlak; etek, ceket ya da göbek sarkması uyluğu şişirmesin diye ortanca uzaklık
+    const round = quantile(d.ds, 0.5);
+    const rx = d.round ? ([round, round] as [number, number]) : r(h => h.xs);
+    out.push({
+      bone: d.bone,
+      a: d.bone.worldToLocal(d.A.clone()),
+      b: d.bone.worldToLocal(d.B.clone()),
+      ax: new THREE.Vector3(1, 0, 0).applyQuaternion(inv),
+      az: new THREE.Vector3(0, 0, 1).applyQuaternion(inv),
+      rx,
+      rf: d.round ? rx : r(h => h.fs, rx),
+      rb: d.round ? rx : r(h => h.bs, rx),
+    });
+  }
+  return out;
+}
+
+const pv = {
+  a: new THREE.Vector3(),
+  b: new THREE.Vector3(),
+  ab: new THREE.Vector3(),
+  o: new THREE.Vector3(),
+  x: new THREE.Vector3(),
+  z: new THREE.Vector3(),
+  q: new THREE.Quaternion(),
+};
+
+/**
+ * `p` noktasındaki `r` yarıçaplı küre gövdeye ne kadar giriyor: `out`'a küreyi dışarı çıkaracak yer
+ * değiştirmeyi yazar ve uzunluğunu döndürür (giriş yoksa 0). Birden çok şekle giriyorsa itmeler derinliğe
+ * göre ağırlıklı karıştırılır: el bir şekilden ötekine geçerken itme yönü bir anda dönmez.
+ */
+export function bodyPenetration(rig: Rig, p: THREE.Vector3, r: number, out: THREE.Vector3): number {
+  out.set(0, 0, 0);
+  let wsum = 0;
+  for (const px of rig.proxies) {
+    const A = px.bone.localToWorld(pv.a.copy(px.a));
+    const B = px.bone.localToWorld(pv.b.copy(px.b));
+    pv.ab.subVectors(B, A);
+    const t = THREE.MathUtils.clamp(pv.o.subVectors(p, A).dot(pv.ab) / Math.max(1e-8, pv.ab.lengthSq()), 0, 1);
+    pv.o.subVectors(p, A).addScaledVector(pv.ab, -t);
+    const dist = pv.o.length();
+    px.bone.getWorldQuaternion(pv.q);
+    const ox = pv.o.dot(pv.x.copy(px.ax).applyQuaternion(pv.q));
+    const oz = pv.o.dot(pv.z.copy(px.az).applyQuaternion(pv.q));
+    const perp = Math.hypot(ox, oz);
+    // yarıçaplar iki yarının ortasında ölçüldü: arası doğrusal
+    const u = THREE.MathUtils.clamp((t - 0.25) * 2, 0, 1);
+    const rx = px.rx[0] + (px.rx[1] - px.rx[0]) * u;
+    const rz = oz > 0 ? px.rf[0] + (px.rf[1] - px.rf[0]) * u : px.rb[0] + (px.rb[1] - px.rb[0]) * u;
+    // elips kesitin noktanın yönündeki yarıçapı
+    const R = perp < 1e-5 ? Math.min(rx, rz) : 1 / Math.hypot(ox / perp / rx, oz / perp / rz);
+    const pen = R + r - dist;
+    if (pen <= 0) continue;
+    const w = pen ** 4;
+    if (dist < 1e-5) out.addScaledVector(pv.z, pen * w);
+    else out.addScaledVector(pv.o, (pen / dist) * w);
+    wsum += w;
+  }
+  if (wsum <= 0) return 0;
+  out.divideScalar(wsum);
+  return out.length();
 }
 
 const tq1 = new THREE.Quaternion();
