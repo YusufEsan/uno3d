@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect x="11" y="3" width="42" height="58" rx="8" fill="#e5322d" stroke="#fff" stroke-width="3.5"/>
+  <ellipse cx="32" cy="32" rx="13" ry="23" transform="rotate(32 32 32)" fill="#fff"/>
+  <text x="32" y="40" text-anchor="middle" font-family="Arial Black, Arial, sans-serif" font-size="22" font-weight="900" font-style="italic" fill="#e5322d">U</text>
+</svg>

@@ -15,6 +15,15 @@ import { Chair } from './Chair';
 import { Room3D } from './Room3D';
 import { THEMES } from './themes';
 
+// r3f 9.x (son sürüm dahil) kendi saatini hâlâ THREE.Clock ile kuruyor; bizim kodumuz Clock kullanmıyor.
+// Yalnızca bu eskime uyarısı susturulur, three'nin diğer mesajları konsola aynen gider.
+THREE.setConsoleFunction((type, message, ...params) => {
+  if (message.startsWith('THREE.Clock:')) return;
+  const trace = params[0] as { isStackTrace?: boolean; getError?: (m: string) => Error } | undefined;
+  if (trace?.isStackTrace && trace.getError) console[type](trace.getError(message));
+  else console[type](message, ...params);
+});
+
 /**
  * Tüm Mixamo karakterlerini görünmez bir köşede bir kez derler (gl.compile). Sahnedeki malzeme
  * ve ışık kombinasyonlarının shader'ları böylece oyun başlamadan hazır olur.
@@ -47,7 +56,8 @@ export function GameCanvas() {
   const quality = useQuality();
   return (
     <Canvas
-      shadows
+      // three r182'den beri PCFSoftShadowMap yok (r3f'nin `shadows` varsayılanı); PCF artık zaten yumuşak örnekliyor
+      shadows="percentage"
       dpr={1}
       camera={{ fov: 58, near: 0.03, far: 60, position: [0, 2, 3] }}
       // ACES renkleri soldurur; "nötr" ton eşleme parlak tonları sıkıştırırken renk doygunluğunu korur
