@@ -9,7 +9,7 @@ export const CARD_W = 0.1;
 export const CARD_H = 0.15;
 
 // deste ve atılan yığın masanın tam ortasında, birbirine simetrik
-export const DECK_POS = new THREE.Vector3(-0.21, TABLE_Y, 0);
+export const DECK_POS = new THREE.Vector3(-0.21, TABLE_Y, -0.16);
 // atılan yığın tam masanın ortasında
 export const PILE_POS = new THREE.Vector3(0, TABLE_Y, 0);
 
@@ -116,8 +116,9 @@ export function pileSlot(cardId: string, index: number): Frame {
   const r1 = ((h & 0xff) / 255) * 2 - 1;
   const r2 = (((h >> 8) & 0xff) / 255) * 2 - 1;
   const r3 = (((h >> 16) & 0xff) / 255) * 2 - 1;
-  const pos = new THREE.Vector3(PILE_POS.x + r2 * 0.012, TABLE_Y + 0.0012 + Math.min(index, 40) * 0.0011, PILE_POS.z + r3 * 0.012);
-  return { pos, quat: faceUp(r1 * 0.45) };
+  // atılan kartlar masanın ortasında, belirgin büyük: yelpazenin üstünde net görünsün
+  const pos = new THREE.Vector3(PILE_POS.x + r2 * 0.006, TABLE_Y + 0.02 + Math.min(index, 40) * 0.0016, PILE_POS.z + r3 * 0.006);
+  return { pos, quat: faceUp(r1 * 0.25), scale: 1.8 };
 }
 
 export function faceUp(spin = 0) {

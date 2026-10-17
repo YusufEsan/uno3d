@@ -65,7 +65,7 @@ function HangingLamp({ theme, quality }: { theme: Theme; quality: QualityLevel }
             position={[0, -0.05, 0]}
             target={target}
             color={theme.lamp.color}
-            intensity={theme.lamp.intensity}
+            intensity={theme.lamp.intensity * 0.65}
             angle={0.72}
             penumbra={0.55}
             distance={6}

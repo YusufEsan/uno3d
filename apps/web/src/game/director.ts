@@ -15,6 +15,7 @@ import {
   anchoredHandSlot,
   faceDown,
   faceUp,
+  seatFrame,
   handSlot,
   headPos,
   pileSlot,
@@ -83,6 +84,8 @@ export class TableDirector {
   root = new THREE.Group();
   shake = 0;
   onCardClick: (card: Card) => void = () => {};
+  /** izleme modunda kendi elini gizler */
+  hideOwnHand = false;
   onDeckClick: () => void = () => {};
 
   private cards = new THREE.Group();
@@ -137,7 +140,7 @@ export class TableDirector {
     this.root.add(this.deck);
 
     // yön halkası ve okları
-    this.ringMat = new THREE.MeshStandardMaterial({ color: '#222', emissive: '#ffffff', emissiveIntensity: 0.6, roughness: 0.4 });
+    this.ringMat = new THREE.MeshStandardMaterial({ color: '#222', emissive: '#ffffff', emissiveIntensity: 0.25, roughness: 0.6 });
     const torus = new THREE.Mesh(new THREE.TorusGeometry(0.34, 0.006, 8, 96), this.ringMat);
     torus.rotation.x = Math.PI / 2;
     this.ring.add(torus, this.arrows);
@@ -201,9 +204,11 @@ export class TableDirector {
     view.discardTop.forEach(c => {
       const e = this.makeEnt(c);
       this.pile.push(e);
+      e.mat.color.setScalar(0.85);
       const s = pileSlot(c.id, this.pile.length - 1);
       e.root.position.copy(s.pos);
       e.root.quaternion.copy(s.quat);
+      e.root.scale.setScalar(s.scale ?? 1);
     });
     this.drawCount = view.drawCount;
     this.updateDeck();
@@ -246,7 +251,8 @@ export class TableDirector {
     const mine = this.hands.get(this.you) ?? [];
     this.hovered = null;
     this.deckHovered = false;
-    if (pointerActive && !useApp.getState().pendingWild) {
+    // izleme modunda kendi kartların görünmez ve tıklanamaz
+    if (pointerActive && !useApp.getState().pendingWild && !this.hideOwnHand) {
       this.raycaster.setFromCamera(pointer, camera);
       const hit = this.raycaster.intersectObjects(mine.map(e => e.front), false)[0];
       this.hovered = hit ? (hit.object.userData.ent as Ent) : null;
@@ -255,6 +261,7 @@ export class TableDirector {
     const hi = this.hovered ? mine.indexOf(this.hovered) : -1;
     const k = Math.min(1, dt * 14);
     mine.forEach((e, i) => {
+      e.root.visible = !this.hideOwnHand;
       const d = i - hi;
       const targetSpread = hi >= 0 && d !== 0 && Math.abs(d) <= 2 ? Math.sign(d) * (Math.abs(d) === 1 ? 0.03 : 0.012) : 0;
       e.hover += ((e === this.hovered ? 1 : 0) - e.hover) * k;
@@ -601,23 +608,16 @@ export class TableDirector {
     const won = winnerId === this.you;
     useApp.getState().react(winnerId, 'dance');
     for (const id of this.players) if (id !== winnerId) useApp.getState().react(id, 'sad');
-    // senin kalan kartların önüne, masaya açık serilir (kamera dönerken elin havada kalmasın)
-    const mine = this.hand(this.you);
-    mine.forEach((e, i) => {
-      const x = (i - (mine.length - 1) / 2) * Math.min(0.07, 0.6 / Math.max(1, mine.length));
-      const pos = new THREE.Vector3(x, TABLE_Y + 0.002 + i * 0.0008, TABLE_R - 0.24);
-      void this.moveTo(e, { pos, quat: faceUp((i - (mine.length - 1) / 2) * 0.04) }, { dur: 0.55, lift: 0.12, delay: i * 0.05 });
-    });
-    // rakiplerin kalan kartları açılır
+    // herkesin kalan kartları masaya açık serilir: her oyuncunun önüne, kendi koltuğuna dönük
     for (const id of this.players) {
-      if (id === this.you) continue;
       const list = this.hand(id);
-      (hands[id] ?? []).forEach((c, i) => {
-        const e = list[i];
-        if (!e) return;
-        this.setFace(e, c);
-        const flipped = e.root.quaternion.clone().multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI));
-        void this.moveTo(e, { pos: e.root.position.clone(), quat: flipped }, { dur: 0.5, lift: 0.04, delay: i * 0.05 });
+      const cards = hands[id] ?? [];
+      const count = Math.max(list.length, cards.length);
+      list.forEach((e, i) => {
+        const c = cards[i];
+        if (c) this.setFace(e, c);
+        const delay = i * 0.06;
+        void this.moveTo(e, this.tableSpot(id, i, count), { dur: 0.6, lift: 0.14, delay });
       });
     }
     this.fx.confetti(new THREE.Vector3(0, TABLE_Y, 0));
@@ -636,6 +636,18 @@ export class TableDirector {
       this.hands.set(pid, list);
     }
     return list;
+  }
+
+  /** Oyun sonunda kartların masadaki yeri: oyuncunun önünde, koltuğuna dönük ve yüzü açık */
+  private tableSpot(pid: string, i: number, count: number): Frame {
+    const idx = this.seatIndexOf(pid);
+    const seat = seatFrame(idx, this.players.length);
+    const d = new THREE.Vector3(seat.pos.x, 0, seat.pos.z).normalize();
+    const side = new THREE.Vector3(-d.z, 0, d.x);
+    const step = Math.min(0.085, 0.55 / Math.max(1, count));
+    const off = (i - (count - 1) / 2) * step;
+    const pos = new THREE.Vector3(d.x * 0.4 + side.x * off, TABLE_Y + 0.003 + i * 0.0009, d.z * 0.4 + side.z * off);
+    return { pos, quat: faceUp(Math.atan2(d.x, d.z)) };
   }
 
   private slotOf(pid: string, i: number, count: number): Frame {
@@ -773,10 +785,12 @@ export class TableDirector {
 
   private async toPile(e: Ent, dur: number, lift: number, spin = 0) {
     this.pile.push(e);
+    e.mat.color.setScalar(0.85);
     const slot = pileSlot(e.card!.id, this.pile.length - 1);
     await this.moveTo(e, slot, { dur, lift, spin, pulse: 1.35 });
     // iniş: ezilip yaylanma, kıvılcım, şok dalgası, kamera sarsıntısı
-    gsap.fromTo(e.root.scale, { x: 1.12, y: 0.9, z: 1.12 }, { x: 1, y: 1, z: 1, duration: 0.4, ease: 'elastic.out(1.1,0.4)' });
+    const ps = slot.scale ?? 1;
+    gsap.fromTo(e.root.scale, { x: 1.12 * ps, y: 0.9 * ps, z: 1.12 * ps }, { x: ps, y: ps, z: ps, duration: 0.4, ease: 'elastic.out(1.1,0.4)' });
     const color = cardColor(e.card!);
     sfx.slap();
     this.fx.burst(slot.pos, color);
@@ -793,7 +807,7 @@ export class TableDirector {
     gsap.to(this.colorLight, { intensity: 0.22, duration: d });
     gsap.to(this.ringMat.emissive, { r: c.r, g: c.g, b: c.b, duration: d });
     gsap.to(glowMat.color, { r: c.r, g: c.g, b: c.b, duration: d });
-    gsap.to(glowMat, { opacity: 0.1, duration: d });
+    gsap.to(glowMat, { opacity: 0.03, duration: d });
     if (big) {
       this.fx.shockwave(PILE_POS, COLOR_HEX[color], 14, 1.1);
       gsap.fromTo(this.colorLight, { intensity: 1.0 }, { intensity: 0.22, duration: 1.2 });

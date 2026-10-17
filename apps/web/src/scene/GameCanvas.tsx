@@ -42,13 +42,13 @@ export function GameCanvas() {
       <DirectorDriver />
       {quality === 'high' && (
         <EffectComposer multisampling={4}>
-          <Bloom mipmapBlur luminanceThreshold={0.97} intensity={theme.bloom} />
+          <Bloom mipmapBlur luminanceThreshold={1.2} intensity={theme.bloom} />
           <Vignette offset={0.25} darkness={0.7} />
         </EffectComposer>
       )}
       {quality === 'medium' && (
         <EffectComposer multisampling={0}>
-          <Bloom luminanceThreshold={0.97} intensity={theme.bloom * 0.8} />
+          <Bloom luminanceThreshold={1.2} intensity={theme.bloom * 0.8} />
           <Vignette offset={0.25} darkness={0.7} />
           <SMAA />
         </EffectComposer>
@@ -121,6 +121,7 @@ function QualityController() {
 
 /** Fare 3D sahnenin üstünde mi (HUD panellerinin üstündeyken kamera ortaya döner) */
 const pointerOnCanvas = { active: false };
+const tmpWatchPos = new THREE.Vector3();
 
 function DirectorDriver() {
   const active = useRef(false);
@@ -143,7 +144,7 @@ function DirectorDriver() {
 /** Koltuğundan bakış: fare ekran kenarlarına gidince baş o yöne döner (Liar's Bar tarzı). */
 function CameraRig() {
   const camera = useThree(s => s.camera);
-  const look = useRef({ yaw: 0, pitch: 0, orbit: 0, endT: 0, sentYaw: 9, sentPitch: 9, lastSend: 0 });
+  const look = useRef({ yaw: 0, pitch: 0, orbit: 0, endT: 0, topT: 0, sentYaw: 9, sentPitch: 9, lastSend: 0 });
   const euler = useMemo(() => new THREE.Euler(0, 0, 0, 'YXZ'), []);
   const orbit = useMemo(() => ({ pos: new THREE.Vector3(), q: new THREE.Quaternion(), m: new THREE.Matrix4(), center: new THREE.Vector3(0, 1.0, 0) }), []);
 
@@ -157,6 +158,8 @@ function CameraRig() {
       camera.lookAt(new THREE.Vector3().fromArray(debugCam.target));
       return;
     }
+    // oyun sonunda kartlar masaya serilir, izleme modunda bile görünsünler
+    director.hideOwnHand = st.watchSelf && st.view?.phase !== 'ended';
     if (!st.room) {
       // ana ekranda masanın etrafında yavaşça dönen kamera
       l.orbit += dt * 0.07;
@@ -178,6 +181,15 @@ function CameraRig() {
       return;
     }
     l.endT = 0;
+
+    // kendimi izleme: kamera masanın ortasından kendi koltuğuna bakar; kartlar kameranın arkasında kalır
+    if (st.watchSelf) {
+      const wp = tmpWatchPos;
+      wp.set(0, EYE_HEIGHT - 0.1, 0.05);
+      camera.position.lerp(wp, Math.min(1, dt * 6));
+      camera.lookAt(0, 1.05, SEAT_R);
+      return;
+    }
     const px = pointerOnCanvas.active ? state.pointer.x : 0;
     const py = pointerOnCanvas.active ? state.pointer.y : 0;
     const dead = (v: number, d: number) => Math.sign(v) * Math.max(0, Math.abs(v) - d) / (1 - d);
@@ -191,8 +203,11 @@ function CameraRig() {
 
     const shake = director.shake;
     director.shake *= Math.pow(0.02, dt);
-    camera.position.set((Math.random() - 0.5) * shake, EYE_HEIGHT + (Math.random() - 0.5) * shake, SEAT_R + 0.02);
-    euler.set(-0.3 + l.pitch, l.yaw, 0);
+    // yukarıdan görünüm: kamera yumuşakça yükselir ve masanın ortasına daha dik bakar
+    l.topT += ((st.topView ? 1 : 0) - l.topT) * Math.min(1, dt * 4);
+    const lift = l.topT * 0.4;
+    camera.position.set((Math.random() - 0.5) * shake, EYE_HEIGHT + lift + (Math.random() - 0.5) * shake, SEAT_R + 0.02 + l.topT * 0.12);
+    euler.set(-0.3 - l.topT * 0.32 + l.pitch, l.yaw, 0);
     camera.quaternion.setFromEuler(euler);
 
     // bakış yönünü diğer oyunculara gönder (avatar başları için)
@@ -238,6 +253,7 @@ function Seats() {
   const you = useApp(s => s.playerId);
   const currentId = useApp(s => s.view?.currentPlayerId ?? null);
   const ended = useApp(s => s.view?.phase === 'ended');
+  const watchSelf = useApp(s => s.watchSelf);
   const seats = seatedPlayers(room);
   const characters = assignCharacters(room);
   const order = relativeOrder(
@@ -259,7 +275,7 @@ function Seats() {
         const idx = order.indexOf(seat.playerId);
         const f = seatFrame(Math.max(0, idx), n);
         // kendi avatarın oyun sırasında görünmez (birinci şahıs); oyun sonunda kamera dönerken görünür
-        const hidden = idx < 0 || (idx === 0 && !ended);
+        const hidden = idx < 0 || (idx === 0 && !ended && !watchSelf);
         if (hidden || !characters[seat.playerId]) return <Chair key={seat.playerId} position={f.pos} quaternion={f.quat} />;
         return (
           <group key={seat.playerId}>

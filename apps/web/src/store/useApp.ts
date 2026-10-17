@@ -50,6 +50,10 @@ interface AppState {
   /** diğer oyuncuların sesli sohbet düzeyi (0–1) */
   voiceVolume: number;
   settingsOpen: boolean;
+  /** kendi avatarını masanın ortasından izleme modu (kendi kartların gizlenir) */
+  watchSelf: boolean;
+  /** masaya yukarıdan bakış: kamera yükselir ve aşağı eğilir */
+  topView: boolean;
   /** odadan çıkış onayı penceresi açık mı */
   leaveAsk: boolean;
   /** Kullanıcının grafik seçimi; "auto" iken autoLevel kare hızına göre değişir */
@@ -83,6 +87,8 @@ export const useApp = create<AppState>()(set => ({
   volume: savedNumber('uno.volume', 0.7),
   voiceVolume: savedNumber('uno.voiceVolume', 1),
   settingsOpen: false,
+  watchSelf: false,
+  topView: false,
   leaveAsk: false,
   quality: savedQuality,
   autoLevel: 'medium',

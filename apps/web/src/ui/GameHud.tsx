@@ -105,6 +105,8 @@ export function GameHud() {
 function TopBar() {
   const room = useApp(s => s.room)!;
   const micOn = useApp(s => s.micOn);
+  const watchSelf = useApp(s => s.watchSelf);
+  const topView = useApp(s => s.topView);
   const connected = useApp(s => s.connected);
   const fps = useApp(s => s.fps);
   return (
@@ -112,6 +114,29 @@ function TopBar() {
       <span className="code-chip">Oda {room.code}</span>
       {!connected && <span className="tag warn">Bağlantı koptu, yeniden bağlanılıyor…</span>}
       <div className="spacer" />
+      <button
+        className={`icon-btn ${topView ? 'on' : ''}`}
+        onClick={() => useApp.setState({ topView: !topView })}
+        title={topView ? 'Normal görünüme dön' : 'Masaya yukarıdan bak'}
+        aria-label={topView ? 'Normal görünüme dön' : 'Masaya yukarıdan bak'}
+        aria-pressed={topView}
+      >
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+          <path d="M4 16l8 4 8-4M4 12l8 4 8-4M12 4L4 8l8 4 8-4-8-4z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+        </svg>
+      </button>
+      <button
+        className={`icon-btn watch ${watchSelf ? 'on' : ''}`}
+        onClick={() => useApp.setState({ watchSelf: !watchSelf })}
+        title={watchSelf ? 'Oyun görünümüne dön' : 'Kendimi izle'}
+        aria-label={watchSelf ? 'Oyun görünümüne dön' : 'Kendimi izle'}
+        aria-pressed={watchSelf}
+      >
+        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+          <path d="M2 12s3.5-6.5 10-6.5S22 12 22 12s-3.5 6.5-10 6.5S2 12 2 12z" fill="none" stroke="currentColor" strokeWidth="1.8" />
+          <circle cx="12" cy="12" r="3" fill="currentColor" />
+        </svg>
+      </button>
       <button
         className={`icon-btn mic ${micOn ? 'on' : 'off'}`}
         onClick={() => void voice.toggleMic()}
