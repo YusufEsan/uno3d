@@ -4,7 +4,7 @@
 
 **Arkadaşlarınla masaya otur, kartları at.**
 
-### [▶ Hemen oyna: yusufesan.github.io/uno3d](https://yusufesan.github.io/uno3d/)
+<a href="https://yusufesan.github.io/uno3d/" target="_blank" rel="noopener"><img src="https://img.shields.io/badge/%E2%96%B6%20HEMEN%20OYNA-yusufesan.github.io%2Funo3d-e5322d?style=for-the-badge&labelColor=111827" alt="Hemen oyna: yusufesan.github.io/uno3d" height="40"></a>
 
 Tarayıcıda oynanan, 3D bir masada geçen online UNO. Karakterler gerçek animasyonlarla masada oturur, kartlar ellerinden savrularak yığına uçar; sen de birinci şahıs gözünden elindeki kartlara bakarsın.
 
