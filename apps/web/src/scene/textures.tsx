@@ -12,6 +12,8 @@ import { useQuality, type QualityLevel } from '../store/useApp';
  * Her tema yalnızca kendi dokularını ister; inene kadar düz renk görünür, sahne beklemez.
  */
 const files = import.meta.glob('../assets/textures/*.webp', { query: '?url', import: 'default', eager: true }) as Record<string, string>;
+/** tüm doku adresleri: ana ekranda arka planda önceden yüklemek için */
+export const TEXTURE_URLS = Object.values(files);
 const url = (name: string) => Object.entries(files).find(([p]) => p.endsWith(`/${name}.webp`))?.[1];
 
 export type SurfaceName =

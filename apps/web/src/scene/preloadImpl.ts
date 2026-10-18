@@ -3,7 +3,10 @@ import { useLoader } from '@react-three/fiber';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
 import { useApp } from '../store/useApp';
 import { ANIMATIONS, CHARACTERS } from './characters';
-import { useGLTF } from '@react-three/drei';
+import { useGLTF, useTexture } from '@react-three/drei';
+import { loadSky } from './outdoor/sky';
+import { TEXTURE_URLS } from './textures';
+import type { SkyName } from './themes';
 import { preloadCharacterScene, useCharacterScene } from './characterModel';
 import { MODELS, preloadCoreModels } from './models';
 
@@ -61,6 +64,40 @@ export async function preloadScene() {
   useApp.setState({ assetsReady: true });
   // geri kalan animasyonlar arka planda tarayıcı önbelleğine iner
   for (const u of extraUrls) void fetch(u).catch(() => undefined);
+  void warmScenes();
+}
+
+const SKIES: SkyName[] = ['kloofendal_48d_partly_cloudy_puresky', 'kloofendal_43d_clear_puresky', 'qwantani_afternoon_puresky', 'qwantani_sunset_puresky'];
+
+/**
+ * Sahneler karakterler kadar hızlı açılsın: ana ekrandayken tüm temaların gökyüzü, model ve dokuları
+ * sırayla indirilip ayrıştırılır. Tek tek ve boş anlarda yapılır; menü takılmaz. Sahne açıldığında
+ * hepsi önbellekte olduğundan Suspense beklemez.
+ */
+async function warmScenes() {
+  const idle = () =>
+    new Promise<void>(r => {
+      const ric = (window as unknown as { requestIdleCallback?: (cb: () => void, o?: { timeout: number }) => number }).requestIdleCallback;
+      if (ric) ric(() => r(), { timeout: 200 });
+      else setTimeout(r, 30);
+    });
+  for (const s of SKIES) {
+    await loadSky(s).catch(() => undefined);
+    await idle();
+  }
+  for (const u of Object.values(MODELS)) {
+    useGLTF.preload(u);
+    await settle(() => useGLTF(u));
+    await idle();
+  }
+  // TexturedMaterial dokuları {renk, kabartma} çifti olarak ister; önbellek anahtarı da bu çifttir
+  for (const nor of TEXTURE_URLS.filter(u => /_nor[.-]/.test(u))) {
+    const diff = TEXTURE_URLS.find(u => u.includes(nor.split('/').pop()!.split('_nor')[0] + '_diff'));
+    const pair = diff ? [diff, nor] : [nor];
+    useTexture.preload(pair);
+    await settle(() => useTexture(pair));
+    await idle();
+  }
 }
 
 /**
