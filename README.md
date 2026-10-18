@@ -4,6 +4,8 @@
 
 **Arkadaşlarınla masaya otur, kartları at.**
 
+### [▶ Hemen oyna: yusufesan.github.io/uno3d](https://yusufesan.github.io/uno3d/)
+
 Tarayıcıda oynanan, 3D bir masada geçen online UNO. Karakterler gerçek animasyonlarla masada oturur, kartlar ellerinden savrularak yığına uçar; sen de birinci şahıs gözünden elindeki kartlara bakarsın.
 
 ![Loş Meyhane'de bir el](docs/screenshots/meyhane.webp)
