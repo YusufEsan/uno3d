@@ -50,7 +50,7 @@ interface AppState {
    * aboneleri yalnızca yeni bir oyuncu ilk kez bakış gönderince haber alır. useFrame içinde okunmalı.
    */
   looks: Record<string, { yaw: number; pitch: number }>;
-  reactions: Record<string, { name: ReactionName; n: number }>;
+  reactions: Record<string, { name: ReactionName; n: number; manual?: boolean }>;
   pendingWild: Card | null;
   toast: { text: string; n: number } | null;
   micOn: boolean;
@@ -74,7 +74,8 @@ interface AppState {
   autoLevel: QualityLevel;
   fps: number;
 
-  react: (playerId: string, name: ReactionName) => void;
+  /** manual: oyuncunun emote ile tetiklediği tepki; yalnız bunlar vücut animasyonu oynatır */
+  react: (playerId: string, name: ReactionName, manual?: boolean) => void;
   showToast: (text: string) => void;
 }
 
@@ -109,8 +110,8 @@ export const useApp = create<AppState>()(set => ({
   autoLevel: 'medium',
   fps: 0,
 
-  react: (playerId, name) =>
-    set(s => ({ reactions: { ...s.reactions, [playerId]: { name, n: ++reactionCounter } } })),
+  react: (playerId, name, manual = false) =>
+    set(s => ({ reactions: { ...s.reactions, [playerId]: { name, n: ++reactionCounter, manual } } })),
   showToast: text => set({ toast: { text, n: Date.now() } }),
 }));
 

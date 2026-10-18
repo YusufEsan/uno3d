@@ -30,6 +30,8 @@ const LEAN = { front: 0.3, back: -0.27 };
 const SHOT_LEAD = 0.6;
 
 /** Boşta kıpırdanma havuzu: her karakter bu havuzdan kendine özgü birkaç hareket seçer */
+/** karakterler kendiliğinden kıpırdanmaz/konuşma hareketi yapmaz; animasyonu oyuncu tetikler */
+const AUTO_MOTION = false;
 const FIDGET_POOL = ['talk', 'talk2', 'disbelief', 'disbelief2', 'disapproval', 'clap', 'thumbsup', 'point', 'laugh', 'yell2'];
 
 /** Oturan karakterin koltuğa göre yerleşimi (modele göre ince ayar) */
@@ -594,8 +596,9 @@ function LivingCharacter({
     if (!reaction) return;
     const st = state.current;
     // kutlamada bazen ayağa kalkıp sevinir
-    const standUp = reaction.name === 'dance' && Math.random() < 0.5 ? pickVariant(rig.actions, 'standup') : undefined;
-    const action = standUp ?? (REACTION_CLIPS[reaction.name] ?? []).map(n => pickVariant(rig.actions, n)).find(Boolean);
+    // oyun olayları yalnız yüz ifadesi verir; vücut animasyonunu oyuncu emote ile tetikler
+    const standUp = reaction.manual && reaction.name === 'dance' && Math.random() < 0.5 ? pickVariant(rig.actions, 'standup') : undefined;
+    const action = !reaction.manual ? undefined : standUp ?? (REACTION_CLIPS[reaction.name] ?? []).map(n => pickVariant(rig.actions, n)).find(Boolean);
     if (action && action !== st.base) {
       const loops = reaction.name === 'dance' && !standUp ? 2 : 1;
       action.setLoop(THREE.LoopRepeat, loops);
@@ -745,7 +748,7 @@ function LivingCharacter({
     if (!st.reacting) {
       st.talkTimer = speaking > 0.12 ? Math.min(st.talkTimer + dt, 2) : Math.max(st.talkTimer - dt, 0);
       const gesturing = !!shot.current;
-      if (rig.talks.length && st.talkTimer > 0.35 && !st.inTalk) {
+      if (AUTO_MOTION && rig.talks.length && st.talkTimer > 0.35 && !st.inTalk) {
         shot.current = null;
         startTalk(0.7);
         st.inTalk = true;
@@ -760,7 +763,7 @@ function LivingCharacter({
 
       // boşta kıpırdanma: başka bir oturma varyantına geç ya da tek seferlik bir el kol hareketi yap
       st.nextFidget -= dt;
-      if (st.nextFidget <= 0 && !st.inTalk) {
+      if (AUTO_MOTION && st.nextFidget <= 0 && !st.inTalk) {
         if (rig.idleVariants.length > 1) {
           const options = rig.idleVariants.filter(a => a !== st.base);
           fadeTo(options[Math.floor(Math.random() * options.length)], 1.4);

@@ -108,7 +108,7 @@ socket.on('game:sync', (p: { view: PlayerView; seq: number; turnEndsInMs: number
 });
 
 socket.on('emote', ({ from, emote }: { from: string; emote: ReactionName }) => {
-  useApp.getState().react(from, emote);
+  useApp.getState().react(from, emote, true);
 });
 
 // bakış mesajları saniyede onlarca gelir: avatarlar bunu her karede getState() ile okur, React çizimi
