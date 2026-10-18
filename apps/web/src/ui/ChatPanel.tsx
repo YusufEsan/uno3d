@@ -1,8 +1,20 @@
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
+import type { ChatMessage } from '@uno/protocol';
 import { request } from '../net/socket';
 import { useApp } from '../store/useApp';
 
-export function ChatPanel() {
+/** Mesaj listesi ayrı ve memo'lu: yazarken her tuşta 80 mesaj yeniden çizilmez, yalnızca yeni mesajda çizilir */
+const ChatMessages = memo(function ChatMessages({ chat }: { chat: ChatMessage[] }) {
+  return chat.map(m => (
+    <div key={m.id} className={`msg ${m.system ? 'system' : ''}`}>
+      {!m.system && <b>{m.name}: </b>}
+      {m.text}
+    </div>
+  ));
+});
+
+// memo: oyun ekranı her hamlede yeniden çizildiğinde sohbet etkilenmez (props yok)
+export const ChatPanel = memo(function ChatPanel() {
   const chat = useApp(s => s.chat);
   const [text, setText] = useState('');
   const [open, setOpen] = useState(true);
@@ -49,12 +61,7 @@ export function ChatPanel() {
             </button>
           </div>
           <div className="chat-list" ref={list}>
-            {chat.map(m => (
-              <div key={m.id} className={`msg ${m.system ? 'system' : ''}`}>
-                {!m.system && <b>{m.name}: </b>}
-                {m.text}
-              </div>
-            ))}
+            <ChatMessages chat={chat} />
           </div>
           <input
             id="chat-input"
@@ -71,4 +78,4 @@ export function ChatPanel() {
       )}
     </div>
   );
-}
+});

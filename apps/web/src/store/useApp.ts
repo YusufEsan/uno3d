@@ -39,7 +39,16 @@ interface AppState {
   /** Animasyon sırasında güncellenen kart sayıları (isim etiketleri için) */
   counts: Record<string, number>;
   unoFlags: Record<string, boolean>;
+  /**
+   * Sesli sohbet düzeyleri (0–1). Saniyede ~11 kez YERİNDE güncellenir: React aboneleri yalnızca biri
+   * konuşmaya başlayınca/susunca (SPEAKING_THRESHOLD) ya da oyuncu listesi değişince haber alır.
+   * Sürekli değer gerekiyorsa useFrame içinde getState() / speakingLevel() ile okunmalı.
+   */
   speaking: Record<string, number>;
+  /**
+   * Diğer oyuncuların bakış yönü. Saniyede onlarca mesaj gelir: değerler YERİNDE güncellenir, React
+   * aboneleri yalnızca yeni bir oyuncu ilk kez bakış gönderince haber alır. useFrame içinde okunmalı.
+   */
   looks: Record<string, { yaw: number; pitch: number }>;
   reactions: Record<string, { name: ReactionName; n: number }>;
   pendingWild: Card | null;
@@ -110,9 +119,24 @@ export function useQuality(): QualityLevel {
   return useApp(s => (s.quality === 'auto' ? s.autoLevel : s.quality));
 }
 
+/** Bu düzeyin üstündeki ses "konuşuyor" sayılır (isim etiketindeki mikrofon simgesi) */
+export const SPEAKING_THRESHOLD = 0.08;
+
+/** Oyuncunun anlık ses düzeyi; React çizimi tetiklemez, useFrame içinde okumak için */
+export function speakingLevel(playerId: string): number {
+  return useApp.getState().speaking[playerId] ?? 0;
+}
+
+/** Oyuncunun son bildirdiği bakış yönü (yoksa undefined); useFrame içinde okumak için */
+export function lookOf(playerId: string): { yaw: number; pitch: number } | undefined {
+  return useApp.getState().looks[playerId];
+}
+
 /** Bir ayarı değiştirir ve yerelde saklar */
 export function setSetting(key: 'volume' | 'voiceVolume', value: number) {
   const v = Math.min(1, Math.max(0, value));
+  // kaydırıcı aynı değeri tekrar gönderirse abonelere boşuna haber verilmez
+  if (useApp.getState()[key] === v) return;
   try {
     localStorage.setItem(`uno.${key}`, String(v));
   } catch {
@@ -122,6 +146,7 @@ export function setSetting(key: 'volume' | 'voiceVolume', value: number) {
 }
 
 export function setQuality(q: QualitySetting) {
+  if (useApp.getState().quality === q) return;
   try {
     localStorage.setItem('uno.quality', q);
   } catch {

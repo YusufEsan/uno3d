@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import gsap from 'gsap';
 import { COLORS, type Card, type Color, type GameEvent, type PlayerView } from '@uno/engine';
 import { COLOR_HEX, COLOR_NAME } from '../config';
@@ -33,6 +34,8 @@ interface Ent {
   root: THREE.Group;
   inner: THREE.Group;
   front: THREE.Mesh;
+  /** arka yüz: yığında yüzü yukarı duran kartta hiç görünmez, çizilmez */
+  back: THREE.Mesh;
   mat: THREE.MeshStandardMaterial;
   card: Card | null;
   tween: gsap.core.Tween | null;
@@ -75,6 +78,31 @@ const CARD_LIT = 0.6;
 const CARD_GLOW = 0.32;
 const PICK_GEO = new THREE.PlaneGeometry(CARD_W, CARD_H);
 let backMat: THREE.MeshStandardMaterial | null = null;
+/**
+ * Kaldırılan kartların malzemeleri atılmaz, burada bekler. Hepsi atılınca three kart shader'ını da siler;
+ * yeni oyunda (deste karıştırma, dağıtım) aynı shader baştan derlenip takılma yapıyordu.
+ */
+const matPool: { mat: THREE.MeshStandardMaterial; fade: { value: number } }[] = [];
+
+/** Karakter elindeki yelpaze: kartların tutma noktasına göre yerel çerçeveleri (kart sayısına göre önbellekte) */
+const anchoredLocals = new Map<number, THREE.Matrix4[]>();
+const ORIGIN = new THREE.Object3D();
+const ONE = new THREE.Vector3(1, 1, 1);
+function anchoredLocal(count: number): THREE.Matrix4[] {
+  let list = anchoredLocals.get(count);
+  if (!list) {
+    // layout'taki yelpazenin aynısı, birim tutma noktasıyla: kare başına yalnız tutma noktasıyla çarpılır
+    list = Array.from({ length: count }, (_, i) => {
+      const s = anchoredHandSlot(ORIGIN, i, count);
+      return new THREE.Matrix4().compose(s.pos, s.quat, ONE);
+    });
+    anchoredLocals.set(count, list);
+  }
+  return list;
+}
+const tmpM = new THREE.Matrix4();
+const tmpScale = new THREE.Vector3();
+const NO_ENTS: Ent[] = [];
 
 /** Kart malzemesine "sönüklük" ekler: renkler korunur, kart biraz daha az parlak görünür (oynanamayan kartlar için) */
 function addFade(mat: THREE.MeshStandardMaterial, fade: { value: number }) {
@@ -137,6 +165,10 @@ export class TableDirector {
   colorLight = new THREE.PointLight('#ffffff', 0, 2.4, 1.6);
 
   private raycaster = new THREE.Raycaster();
+  /** her karede yeniden kullanılan diziler (çöp üretmesin) */
+  private picks: THREE.Object3D[] = [];
+  private hits: THREE.Intersection[] = [];
+  private cursor = '';
   private hovered: Ent | null = null;
   /** bir önceki karede üzerinde durulan kart */
   private lastHovered: Ent | null = null;
@@ -154,7 +186,16 @@ export class TableDirector {
     // deste: kart sayısına göre yükselen blok
     this.deckMat = new THREE.MeshStandardMaterial({ map: backTexture(), roughness: 0.6, emissive: '#ffffff', emissiveIntensity: 0, emissiveMap: backTexture() });
     const side = new THREE.MeshStandardMaterial({ color: '#e9e4d8', roughness: 0.9 });
-    this.deck = new THREE.Mesh(new THREE.BoxGeometry(CARD_W, 1, CARD_H), [side, side, this.deckMat, side, side, side]);
+    // kutunun altı yüzü iki gruba toplanır (beş kenar + üst yüz): 6 yerine 2 çizim
+    const deckGeo = new THREE.BoxGeometry(CARD_W, 1, CARD_H);
+    const idx = deckGeo.index!.array;
+    const order: number[] = [];
+    for (const g of [0, 1, 3, 4, 5, 2].map(i => deckGeo.groups[i])) for (let k = g.start; k < g.start + g.count; k++) order.push(idx[k]);
+    deckGeo.setIndex(order);
+    deckGeo.clearGroups();
+    deckGeo.addGroup(0, order.length - 6, 0);
+    deckGeo.addGroup(order.length - 6, 6, 1);
+    this.deck = new THREE.Mesh(deckGeo, [side, this.deckMat]);
     this.deck.castShadow = true;
     this.deck.receiveShadow = true;
     this.root.add(this.deck);
@@ -164,14 +205,16 @@ export class TableDirector {
     const torus = new THREE.Mesh(new THREE.TorusGeometry(0.34, 0.006, 8, 96), this.ringMat);
     torus.rotation.x = Math.PI / 2;
     this.ring.add(torus, this.arrows);
-    for (let i = 0; i < 3; i++) {
+    // üç ok tek geometride: tek çizim
+    const cones = [0, 1, 2].map(i => {
       const a = (i / 3) * Math.PI * 2;
-      const cone = new THREE.Mesh(new THREE.ConeGeometry(0.022, 0.06, 12), this.ringMat);
-      cone.position.set(Math.sin(a) * 0.34, 0, Math.cos(a) * 0.34);
+      const cone = new THREE.ConeGeometry(0.022, 0.06, 12);
       // koni teğet yönünde, oyun yönüne (saat yönü = negatif açı) bakar
-      cone.rotation.set(0, a, Math.PI / 2);
-      this.arrows.add(cone);
-    }
+      const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, a, Math.PI / 2));
+      return cone.applyMatrix4(new THREE.Matrix4().compose(new THREE.Vector3(Math.sin(a) * 0.34, 0, Math.cos(a) * 0.34), q, ONE));
+    });
+    this.arrows.add(new THREE.Mesh(mergeGeometries(cones), this.ringMat));
+    cones.forEach(g => g.dispose());
     this.ring.position.set(0, TABLE_Y + 0.006, 0.02);
 
     // atılan yığının altında renk parıltısı
@@ -228,6 +271,7 @@ export class TableDirector {
       e.root.position.copy(s.pos);
       e.root.quaternion.copy(s.quat);
       e.root.scale.setScalar(s.scale ?? 1);
+      e.back.visible = false;
     });
     this.tintPile();
     this.drawCount = view.drawCount;
@@ -267,8 +311,11 @@ export class TableDirector {
 
     const mm = this.marker.material as THREE.MeshBasicMaterial;
     if (mm.opacity > 0) this.marker.scale.setScalar(1 + Math.sin(performance.now() / 260) * 0.12);
+    // tamamen sönükken (ana ekran) toplamalı parıltılar hiçbir şey eklemez: çizilmezler
+    this.marker.visible = mm.opacity > 0;
+    this.glow.visible = (this.glow.material as THREE.MeshBasicMaterial).opacity > 0;
 
-    const mine = this.hands.get(this.you) ?? [];
+    const mine = this.hands.get(this.you) ?? NO_ENTS;
     this.hovered = null;
     this.deckHovered = false;
     // izleme modunda kendi kartların görünmez ve tıklanamaz
@@ -276,18 +323,27 @@ export class TableDirector {
       this.raycaster.setFromCamera(pointer, camera);
       // seçim kartların yelpazedeki sabit yerlerine göre yapılır: üzerine gelinen kart kalkıp büyüyünce
       // komşusunun önüne geçse bile seçim değişmez (kartlar arasında gidip gelmez)
-      const hit = this.raycaster.intersectObjects(mine.map(e => e.pick), false)[0];
+      const picks = this.picks;
+      const hits = this.hits;
+      picks.length = 0;
+      for (const e of mine) picks.push(e.pick);
+      hits.length = 0;
+      const hit = this.raycaster.intersectObjects(picks, false, hits)[0];
       this.hovered = hit ? (hit.object.userData.ent as Ent) : null;
       // fare hiçbir kartın yerinde değilse ama az önce seçili kartın kalkmış hâlinin üstündeyse o kart seçili
       // kalır: kartın kenarında durunca kart kalkıp fareden kaçtı diye bırakılmaz (yukarı aşağı titremez)
       const prev = this.lastHovered;
-      if (!this.hovered && prev && mine.includes(prev) && this.raycaster.intersectObject(prev.hit, false).length > 0) this.hovered = prev;
-      if (!this.hovered && this.drawCount > 0) this.deckHovered = this.raycaster.intersectObject(this.deck, false).length > 0;
+      hits.length = 0;
+      if (!this.hovered && prev && mine.includes(prev) && this.raycaster.intersectObject(prev.hit, false, hits).length > 0) this.hovered = prev;
+      hits.length = 0;
+      if (!this.hovered && this.drawCount > 0) this.deckHovered = this.raycaster.intersectObject(this.deck, false, hits).length > 0;
+      hits.length = 0;
     }
     this.lastHovered = this.hovered;
     const hi = this.hovered ? mine.indexOf(this.hovered) : -1;
     const k = Math.min(1, dt * 14);
-    mine.forEach((e, i) => {
+    for (let i = 0; i < mine.length; i++) {
+      const e = mine[i];
       e.root.visible = !this.hideOwnHand;
       const d = i - hi;
       const targetSpread = hi >= 0 && d !== 0 && Math.abs(d) <= 2 ? Math.sign(d) * (Math.abs(d) === 1 ? 0.03 : 0.012) : 0;
@@ -296,23 +352,31 @@ export class TableDirector {
       e.lift += ((e.playable ? 1 : 0) - e.lift) * k;
       e.inner.position.set(e.spread, e.hover * 0.05 + e.lift * 0.035, e.hover * 0.025 + e.lift * 0.004);
       e.inner.scale.setScalar(1 + e.hover * 0.14);
-    });
-    document.body.style.cursor = this.hovered || this.deckHovered ? 'pointer' : '';
+    }
+    // imleç yalnız değişince yazılır (her karede DOM'a dokunulmaz)
+    const cursor = this.hovered || this.deckHovered ? 'pointer' : '';
+    if (cursor !== this.cursor) {
+      this.cursor = cursor;
+      document.body.style.cursor = cursor;
+    }
 
     // atılmak üzere olan kart sağ eli takip eder
     for (const e of this.following) if (!e.tween && e.follow) e.follow.handPosition(e.root.position);
 
-    // rakip kartları karakterin elini takip eder (uçuştaki kartlar hariç)
+    // rakip kartları karakterin elini takip eder (uçuştaki kartlar hariç). Tutma noktası oyuncu başına bir
+    // kez güncellenir; her kart önbellekteki yerel çerçevesiyle çarpılır (kare başına nesne üretilmez)
     if (!this.revealed) {
-      for (const [pid, list] of this.hands) {
-        if (pid === this.you || !this.anchors.has(pid)) continue;
-        list.forEach((e, i) => {
-          if (e.tween) return;
-          const s = this.slotOf(pid, i, list.length);
-          e.root.position.copy(s.pos);
-          e.root.quaternion.copy(s.quat);
-          e.root.scale.setScalar(s.scale ?? 1);
-        });
+      for (const [pid, anchor] of this.anchors) {
+        const list = pid !== this.you ? this.hands.get(pid) : undefined;
+        if (!list?.length) continue;
+        anchor.updateWorldMatrix(true, false);
+        const locals = anchoredLocal(list.length);
+        for (let i = 0; i < list.length; i++) {
+          const e = list[i];
+          if (e.tween) continue;
+          tmpM.multiplyMatrices(anchor.matrixWorld, locals[i]).decompose(e.root.position, e.root.quaternion, tmpScale);
+          e.root.scale.setScalar(1);
+        }
       }
     }
   }
@@ -675,6 +739,8 @@ export class TableDirector {
     this.pile = top ? [top] : [];
     sfx.shuffle();
     const deckTop = this.deckTop();
+    // desteye dönerken kartlar ters döner: arka yüzleri yeniden çizilir
+    old.forEach(e => (e.back.visible = true));
     await Promise.all(
       old.map((e, i) =>
         this.moveTo(e, { pos: deckTop.pos.clone().setY(deckTop.pos.y + 0.03), quat: deckTop.quat }, { dur: 0.45, lift: 0.08, delay: i * 0.008 }).then(
@@ -773,8 +839,26 @@ export class TableDirector {
   private makeEnt(card: Card | null): Ent {
     backMat ??= new THREE.MeshStandardMaterial({ map: backTexture(), roughness: 0.8 });
     const map = card ? faceTexture(card) : backTexture();
-    // mat yüzey: lamba altında parlayıp yazıyı silmesin
-    const mat = new THREE.MeshStandardMaterial({ map, color: new THREE.Color().setScalar(CARD_LIT), roughness: 1, metalness: 0, emissive: '#ffffff', emissiveMap: map, emissiveIntensity: CARD_GLOW });
+    const pooled = matPool.pop();
+    let mat: THREE.MeshStandardMaterial;
+    let fade: { value: number };
+    if (pooled) {
+      // havuzdaki malzeme ilk hâline döner (shader aynı, yalnız doku ve değerler değişir)
+      ({ mat, fade } = pooled);
+      mat.map = map;
+      mat.emissiveMap = map;
+      mat.color.setScalar(CARD_LIT);
+      mat.emissiveIntensity = CARD_GLOW;
+      fade.value = 0;
+    } else {
+      // mat yüzey: lamba altında parlayıp yazıyı silmesin
+      mat = new THREE.MeshStandardMaterial({ map, color: new THREE.Color().setScalar(CARD_LIT), roughness: 1, metalness: 0, emissive: '#ffffff', emissiveMap: map, emissiveIntensity: CARD_GLOW });
+      // gölgeyi iki yüzlü tek ön yüz verir (arka yüz gölge çizmez): kart başına gölge çizimi yarıya iner,
+      // gölge aynı kalır (ışık hangi taraftan gelirse gelsin kartın kendisi gölge düşürür)
+      mat.shadowSide = THREE.DoubleSide;
+      fade = { value: 0 };
+      addFade(mat, fade);
+    }
     const root = new THREE.Group();
     const inner = new THREE.Group();
     const front = new THREE.Mesh(GEO, mat);
@@ -782,16 +866,22 @@ export class TableDirector {
     front.position.z = 0.0006;
     back.position.z = -0.0006;
     back.rotation.y = Math.PI;
-    front.castShadow = back.castShadow = true;
-    const fade = { value: 0 };
-    addFade(mat, fade);
+    front.castShadow = true;
     inner.add(front, back);
     const hit = new THREE.Mesh(HIT_GEO, HIT_MAT);
     const pick = new THREE.Mesh(PICK_GEO, HIT_MAT);
     pick.position.z = 0.0006;
+    // algılama alanları hiç çizilmez: sahnede görünmez olunca her karede çizim listesine de girmezler
+    // (Raycaster görünürlüğe bakmaz, fare algılaması aynen çalışır)
+    hit.visible = pick.visible = false;
+    // yüzler ve algılama alanları kartın içinde hiç kıpırdamaz: yerel matrisleri bir kez hesaplanır
+    for (const m of [front, back, hit, pick]) {
+      m.updateMatrix();
+      m.matrixAutoUpdate = false;
+    }
     root.add(inner, hit, pick);
     this.cards.add(root);
-    const ent: Ent = { root, inner, front, mat, card, tween: null, hover: 0, spread: 0, playable: false, lift: 0, fade, follow: null, pick, hit };
+    const ent: Ent = { root, inner, front, back, mat, card, tween: null, hover: 0, spread: 0, playable: false, lift: 0, fade, follow: null, pick, hit };
     front.userData.ent = ent;
     pick.userData.ent = ent;
     return ent;
@@ -801,8 +891,8 @@ export class TableDirector {
     e.card = card;
     const map = faceTexture(card);
     e.mat.map = map;
+    // doku hep aynı türden bir tuval dokusu: shader değişmez, needsUpdate gerekmez
     e.mat.emissiveMap = map;
-    e.mat.needsUpdate = true;
   }
 
   private spawnFromDeck(card: Card | null): Ent {
@@ -815,8 +905,14 @@ export class TableDirector {
 
   private disposeEnt(e: Ent) {
     e.tween?.kill();
+    // iki kez kaldırılan kart malzemesini havuza iki kez koymasın
+    if (e.root.parent !== this.cards) return;
     this.cards.remove(e.root);
-    e.mat.dispose();
+    // malzeme havuza döner; üzerinde süren geçişler yeni karta sızmasın
+    gsap.killTweensOf(e.fade);
+    gsap.killTweensOf(e.mat);
+    gsap.killTweensOf(e.mat.color);
+    matPool.push({ mat: e.mat, fade: e.fade });
   }
 
   private clearAll() {
@@ -889,6 +985,8 @@ export class TableDirector {
     this.tintPile();
     const slot = pileSlot(e.card!.id, this.pile.length - 1);
     await this.moveTo(e, slot, { dur, lift, spin, pulse: 1.35 });
+    // yüzü yukarı yatan kartın arka yüzü masaya bakar, hiçbir kameradan görünmez: çizilmez
+    if (!e.tween && this.pile.includes(e)) e.back.visible = false;
     // iniş: ezilip yaylanma, kıvılcım, şok dalgası, kamera sarsıntısı
     const ps = slot.scale ?? 1;
     gsap.fromTo(e.root.scale, { x: 1.12 * ps, y: 0.9 * ps, z: 1.12 * ps }, { x: ps, y: ps, z: ps, duration: 0.4, ease: 'elastic.out(1.1,0.4)' });
@@ -966,6 +1064,10 @@ export class TableDirector {
   private syncCounts() {
     const counts: Record<string, number> = {};
     for (const [id, list] of this.hands) counts[id] = list.length;
+    // sayılar değişmediyse mağaza bildirimi yapılmaz
+    const prev = useApp.getState().counts;
+    const keys = Object.keys(counts);
+    if (keys.length === Object.keys(prev).length && keys.every(id => prev[id] === counts[id])) return;
     useApp.setState({ counts });
   }
 }

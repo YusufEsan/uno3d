@@ -25,6 +25,10 @@ import {
 const BOT_NAMES = ['Rıza', 'Sevim', 'Hayri', 'Nermin', 'Cemil', 'Fikriye', 'Şevket', 'Leman'];
 const LOBBY_GRACE_MS = 20_000;
 const GAME_GRACE_MS = 60_000;
+/** Bir oyuncunun bakış yönü diğerlerine en fazla bu aralıkla iletilir (istemci araya yumuşak geçiş koyar) */
+const LOOK_INTERVAL_MS = 100;
+
+type LookState = { yaw: number; pitch: number; sentAt: number; timer: NodeJS.Timeout | null };
 
 const rand = (min: number, max: number) => min + Math.random() * (max - min);
 
@@ -45,7 +49,12 @@ export class Room {
   private game: GameState | null = null;
   private seq = 0;
   private turnDeadline = 0;
+  /** İstemcilerin sıraya aldığı canlandırmaların tahmini bitiş anı (ms) */
+  private animUntil = 0;
   private sockets = new Map<string, Socket>();
+  /** Her bağlantıya en son giden oda durumu (JSON): değişmeyen durum tekrar gönderilmez */
+  private sentRoom = new WeakMap<Socket, string>();
+  private looks = new Map<string, LookState>();
   private graceTimers = new Map<string, NodeJS.Timeout>();
   private actionTimer: NodeJS.Timeout | null = null;
   private chatLog: ChatMessage[] = [];
@@ -116,7 +125,11 @@ export class Room {
   }
 
   private attach(playerId: string, socket: Socket) {
+    // aynı oyuncunun eski bağlantısı hâlâ açıksa odadan çıkar: oda yayınları iki yere gitmesin
+    const old = this.sockets.get(playerId);
+    if (old && old !== socket) old.leave(this.code);
     this.sockets.set(playerId, socket);
+    this.sentRoom.delete(socket); // (yeniden) gelen bağlantı oda durumunu mutlaka alsın
     socket.join(this.code);
     socket.emit('chat:history', this.chatLog);
     if (this.game) this.sendSync(playerId);
@@ -135,6 +148,7 @@ export class Room {
   disconnect(playerId: string, socket: Socket) {
     if (this.sockets.get(playerId) !== socket) return; // eski bağlantı
     this.sockets.delete(playerId);
+    this.clearLook(playerId);
     const seat = this.seatOf(playerId);
     if (!seat) return;
     seat.connected = false;
@@ -152,6 +166,7 @@ export class Room {
     this.graceTimers.delete(playerId);
     this.sockets.get(playerId)?.leave(this.code);
     this.sockets.delete(playerId);
+    this.clearLook(playerId);
 
     if (this.status === 'playing' && this.game?.players.some(p => p.id === playerId)) {
       // oyun sürerken koltuk bota devredilir
@@ -170,6 +185,7 @@ export class Room {
   private destroy() {
     if (this.actionTimer) clearTimeout(this.actionTimer);
     for (const t of this.graceTimers.values()) clearTimeout(t);
+    for (const id of [...this.looks.keys()]) this.clearLook(id);
     this.onEmpty(this);
   }
 
@@ -228,6 +244,7 @@ export class Room {
     // her oyunda karakterler yeniden ve birbirinden farklı dağıtılır
     this.charSeed = Math.floor(Math.random() * 2 ** 31);
     this.seq = 0;
+    this.animUntil = 0;
     for (const id of ids) this.scores[id] ??= 0;
     this.broadcastRoom();
     this.afterAction(events);
@@ -260,7 +277,11 @@ export class Room {
   private scheduleTurn(events: GameEvent[]) {
     if (this.actionTimer) clearTimeout(this.actionTimer);
     if (!this.game || this.game.phase !== 'playing') return;
-    const animMs = estimateAnimMs(events);
+    // istemci paketleri sırayla canlandırır: yeni olaylar öncekilerin bitmesini bekler. Bekleme süresi
+    // kalan canlandırmayı da kapsar; böylece sıra devrinde (kopma, ayrılma) bot hamlesi araya sıkışmaz
+    const now = Date.now();
+    this.animUntil = Math.max(now, this.animUntil) + estimateAnimMs(events);
+    const animMs = this.animUntil - now;
     const pid = this.currentId()!;
     const seat = this.seatOf(pid);
     let delay: number;
@@ -272,7 +293,7 @@ export class Room {
       this.turnDeadline = 0;
     } else {
       delay = animMs + this.game.rules.turnSeconds * 1000;
-      this.turnDeadline = Date.now() + delay;
+      this.turnDeadline = now + delay;
     }
     const turnSeq = this.game.turnSeq;
     const drawnBefore = this.game.drawnCardId;
@@ -353,8 +374,32 @@ export class Room {
     this.io.to(this.code).emit('emote', { from: playerId, emote });
   }
 
+  /**
+   * Bakış yönü: oyuncu başına en fazla LOOK_INTERVAL_MS'de bir, gönderen hariç odadakilere iletilir.
+   * Aradaki mesajlar birleşir, gecikmeli gönderim her zaman en son yönü taşır (son duruş kaybolmaz).
+   */
   look(playerId: string, yaw: number, pitch: number) {
-    this.sockets.get(playerId)?.to(this.code).volatile.emit('look', { from: playerId, yaw, pitch });
+    if (this.sockets.size < 2) return; // bakışı görecek başka bağlı insan yok
+    let l = this.looks.get(playerId);
+    if (!l) this.looks.set(playerId, (l = { yaw, pitch, sentAt: 0, timer: null }));
+    l.yaw = yaw;
+    l.pitch = pitch;
+    if (l.timer) return; // bekleyen gönderim zaten bu son değeri taşıyacak
+    const wait = l.sentAt + LOOK_INTERVAL_MS - Date.now();
+    if (wait <= 0) this.flushLook(playerId, l);
+    else l.timer = setTimeout(() => this.flushLook(playerId, l), wait);
+  }
+
+  private flushLook(playerId: string, l: LookState) {
+    l.timer = null;
+    l.sentAt = Date.now();
+    this.sockets.get(playerId)?.to(this.code).volatile.emit('look', { from: playerId, yaw: l.yaw, pitch: l.pitch });
+  }
+
+  private clearLook(playerId: string) {
+    const l = this.looks.get(playerId);
+    if (l?.timer) clearTimeout(l.timer);
+    this.looks.delete(playerId);
   }
 
   /** WebRTC sinyal mesajlarını (offer/answer/ICE) hedef oyuncuya iletir */
@@ -382,11 +427,28 @@ export class Room {
     };
   }
 
-  /** Oda durumu herkese gider; bekleyen katılma istekleri (isimler) yalnızca oda sahibine */
+  /**
+   * Oda durumu herkese gider; bekleyen katılma istekleri (isimler) yalnızca oda sahibine.
+   * Bir bağlantının elindeki durumla aynı olan durum tekrar gönderilmez: istemci boşuna yeniden çizmez.
+   */
   broadcastRoom() {
     const full = this.state();
+    let pub: RoomState | null = null;
+    let fullJson = '';
+    let pubJson = '';
     for (const [pid, socket] of this.sockets) {
-      socket.emit('room:state', pid === this.hostId ? full : { ...full, pending: [] });
+      let payload: RoomState;
+      let json: string;
+      if (pid === this.hostId) {
+        payload = full;
+        json = fullJson ||= JSON.stringify(full);
+      } else {
+        payload = pub ??= { ...full, pending: [] };
+        json = pubJson ||= JSON.stringify(payload);
+      }
+      if (this.sentRoom.get(socket) === json) continue;
+      this.sentRoom.set(socket, json);
+      socket.emit('room:state', payload);
     }
   }
 }

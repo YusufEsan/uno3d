@@ -162,15 +162,31 @@ describe('kart kuralları', () => {
     expect(ended && ended.type === 'GAME_ENDED' && ended.points).toBe(73);
   });
 
+  it('hamle girdi durumunu değiştirmez (eski durum aynen kalır)', () => {
+    const s = makeState(
+      [[card('a', 'red', 'draw2'), card('w', 'wild', 'wild4'), ...filler()], filler(), filler()],
+      card('t', 'red', '1'),
+      { rules: { stacking: true, turnSeconds: 30 } },
+    );
+    const before = JSON.stringify(s);
+    play(s, 'p0', 'a');
+    applyAction(s, 'p0', { type: 'DRAW' });
+    const drew = applyAction(s, 'p0', { type: 'DRAW' });
+    if (drew.ok && drew.state.drawnCardId) applyAction(drew.state, 'p0', { type: 'PASS' });
+    expect(JSON.stringify(s)).toBe(before);
+  });
+
   it('deste bitince atılan kartlar karıştırılıp desteye döner', () => {
     const s = makeState([filler(), filler()], card('t', 'red', '9'), {
       drawPile: [],
       discardPile: [card('o1', 'yellow', '2'), card('o2', 'yellow', '3'), card('t', 'red', '9')],
     });
+    const before = JSON.stringify(s);
     const r = applyAction(s, 'p0', { type: 'DRAW' });
     if (!r.ok) throw new Error(r.error);
     expect(r.events[0].type).toBe('DECK_RESHUFFLED');
     expect(r.state.discardPile).toHaveLength(1);
+    expect(JSON.stringify(s)).toBe(before);
   });
 });
 

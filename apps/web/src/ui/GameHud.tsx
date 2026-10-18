@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { memo, useEffect, useState } from 'react';
 import { COLORS } from '@uno/engine';
 import { EMOTES } from '@uno/protocol';
 import { COLOR_HEX, COLOR_NAME } from '../config';
@@ -108,13 +108,13 @@ export function GameHud() {
   );
 }
 
-function TopBar() {
+// memo: her hamlede değişen oyun görünümü üst barı yeniden çizdirmez; yalnızca kendi abonelikleri çizdirir
+const TopBar = memo(function TopBar() {
   const room = useApp(s => s.room)!;
   const micOn = useApp(s => s.micOn);
   const watchSelf = useApp(s => s.watchSelf);
   const topView = useApp(s => s.topView);
   const connected = useApp(s => s.connected);
-  const fps = useApp(s => s.fps);
   return (
     <div className="topbar">
       <span className="code-chip">Oda {room.code}</span>
@@ -156,31 +156,49 @@ function TopBar() {
           {!micOn && <path d="M4 4l16 16" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />}
         </svg>
       </button>
-      <span className={`fps ${fps && fps < 30 ? 'low' : ''}`} title="Kare hızı">{fps} FPS</span>
+      <FpsBadge />
       <SettingsButton />
       <button className="btn small ghost" onClick={askLeave}>
         Çık
       </button>
     </div>
   );
-}
+});
 
+/** Saniyede bir değişen kare hızı ayrı bileşende: güncellenince sadece bu yazı yeniden çizilir */
+function FpsBadge() {
+  const fps = useApp(s => s.fps);
+  return <span className={`fps ${fps && fps < 30 ? 'low' : ''}`} title="Kare hızı">{fps} FPS</span>;
+}
 
 function TurnTimer() {
   const deadline = useApp(s => s.turnDeadline);
-  const [now, setNow] = useState(Date.now());
+  const [, setTick] = useState(0);
+  const left = deadline ? Math.max(0, Math.ceil((deadline - Date.now()) / 1000)) : 0;
   useEffect(() => {
-    const t = setInterval(() => setNow(Date.now()), 250);
-    return () => clearInterval(t);
-  }, []);
-  if (!deadline) return null;
-  const left = Math.max(0, Math.ceil((deadline - now) / 1000));
-  if (left > 30) return null;
+    if (!deadline) return;
+    // saniyede 4 kez yerine yalnızca gösterilen sayı değiştiğinde uyanır;
+    // 30 sn'den fazla süre varken sayaç gizli olduğu için 30'a inene kadar hiç çizilmez
+    let t = 0;
+    const schedule = () => {
+      const ms = deadline - Date.now();
+      if (ms <= 0) return;
+      const s = Math.ceil(ms / 1000);
+      const wait = s > 30 ? ms - 30000 : ms - (s - 1) * 1000;
+      t = window.setTimeout(() => {
+        setTick(n => n + 1);
+        schedule();
+      }, wait + 10);
+    };
+    schedule();
+    return () => clearTimeout(t);
+  }, [deadline]);
+  if (!deadline || left > 30) return null;
   return <span className={`timer ${left <= 5 ? 'low' : ''}`}>{left}s</span>;
 }
 
 /** Elindeki kartları renge ve sayıya göre sırala ya da karıştır */
-function HandTools() {
+const HandTools = memo(function HandTools() {
   return (
     <div className="hand-tools">
       <button className="hand-tool" onClick={() => sortHand()} title="Renge ve sayıya göre sırala (S)">
@@ -199,9 +217,9 @@ function HandTools() {
       </button>
     </div>
   );
-}
+});
 
-function EmoteBar() {
+const EmoteBar = memo(function EmoteBar() {
   return (
     <div className="emotes">
       {EMOTES.map(e => (
@@ -212,7 +230,7 @@ function EmoteBar() {
       ))}
     </div>
   );
-}
+});
 
 function ScoreBoard({ isHost }: { isHost: boolean }) {
   const room = useApp(s => s.room)!;

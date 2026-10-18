@@ -87,11 +87,56 @@ function retarget(clip: THREE.AnimationClip, prefix: string, name: string) {
   const tracks = clip.tracks.map(t => {
     const dot = t.name.indexOf('.');
     const node = t.name.slice(0, dot).replace(/^mixamorig\d*:?/i, '');
-    const out = t.clone();
-    out.name = `${prefix}${node}${t.name.slice(dot)}`;
+    // clone() gibi, ama anahtar kare dizileri kopyalanmaz: klipler salt okunur, karakterler aynı diziyi paylaşır
+    const Track = t.constructor as new (n: string, times: ArrayLike<number>, values: ArrayLike<number>) => THREE.KeyframeTrack;
+    const out = new Track(`${prefix}${node}${t.name.slice(dot)}`, t.times, t.values);
+    // özel ara değerleme (ör. kuaterniyon) korunur, clone() da aynısını yapar
+    (out as unknown as { createInterpolant: unknown }).createInterpolant = (t as unknown as { createInterpolant: unknown }).createInterpolant;
     return out;
   });
   return new THREE.AnimationClip(name, clip.duration, tracks);
+}
+
+const isIdentity = (o: THREE.Object3D) =>
+  o.position.x === 0 && o.position.y === 0 && o.position.z === 0 &&
+  o.quaternion.x === 0 && o.quaternion.y === 0 && o.quaternion.z === 0 && o.quaternion.w === 1 &&
+  o.scale.x === 1 && o.scale.y === 1 && o.scale.z === 1;
+
+/** "Spine_3" gibi kopya kemik: ebeveyniyle aynı adlı (sonek hariç), yerel dönüşümü birim, animasyon almaz */
+const isBoneCopy = (b: THREE.Object3D) =>
+  (b as THREE.Bone).isBone && !!b.parent && (b.parent as THREE.Bone).isBone && /_\d+$/.test(b.name) &&
+  b.name.replace(/_\d+$/, '') === b.parent.name.replace(/_\d+$/, '') && isIdentity(b);
+
+/**
+ * Bazı modellerde (FBX'ten çevrilen) her deri parçası iskeletin iç içe bir kopyasına bağlı: boss'ta 11 × 68 kemik.
+ * Kopyaların dünya matrisi ebeveyniyle birebir aynı olduğundan deriler en dıştaki kemiğe bağlanır, kopyalar
+ * ağaçtan çıkarılır. Görüntü bit bit aynı kalır; her karedeki matris güncellemesi ~10 kat azalır.
+ */
+function collapseBoneCopies(root: THREE.Object3D) {
+  const meshes: THREE.SkinnedMesh[] = [];
+  root.traverse(o => {
+    if ((o as THREE.SkinnedMesh).isSkinnedMesh && (o as THREE.SkinnedMesh).skeleton) meshes.push(o as THREE.SkinnedMesh);
+  });
+  let any = false;
+  for (const m of meshes) {
+    const bones = m.skeleton.bones;
+    for (let i = 0; i < bones.length; i++) {
+      let b: THREE.Object3D = bones[i];
+      while (isBoneCopy(b)) b = b.parent!;
+      if (b !== bones[i]) {
+        bones[i] = b as THREE.Bone;
+        any = true;
+      }
+    }
+  }
+  if (!any) return;
+  // yalnız tamamı kopyalardan oluşan alt ağaçlar çıkarılır (altında başka bir düğüm varsa dokunulmaz)
+  const onlyCopies = (o: THREE.Object3D): boolean => isBoneCopy(o) && o.children.every(onlyCopies);
+  const drop: THREE.Object3D[] = [];
+  root.traverse(o => {
+    if (isBoneCopy(o) && !isBoneCopy(o.parent!) && onlyCopies(o)) drop.push(o);
+  });
+  for (const o of drop) o.parent!.remove(o);
 }
 
 export function buildRig(
@@ -101,9 +146,12 @@ export function buildRig(
   opts: { kind: 'mixamo' | 'robot'; targetHeight: number; neckHeight?: number; tint?: string },
 ): Rig {
   const root = cloneSkinned(source) as THREE.Object3D;
+  collapseBoneCopies(root);
   const bones: Rig['bones'] = {};
   const allBones: THREE.Bone[] = [];
   const morphs: Rig['morphs'] = {};
+  // aynı kaynak malzemeyi kullanan parçalar tek bir kopyayı paylaşır (boss: 11 parça, 1 malzeme)
+  const matCopies = new Map<THREE.Material, THREE.Material>();
 
   root.traverse(o => {
     if ((o as THREE.Bone).isBone) allBones.push(o as THREE.Bone);
@@ -113,7 +161,10 @@ export function buildRig(
     m.receiveShadow = true;
     m.frustumCulled = false; // iskelet animasyonunda sınır kutusu yanıltabilir
     const mats = (Array.isArray(m.material) ? m.material : [m.material]).map(mat => {
+      const done = matCopies.get(mat);
+      if (done) return done;
       const c = (mat as THREE.MeshStandardMaterial).clone();
+      matCopies.set(mat, c);
       if (opts.tint && /main/i.test(c.name)) c.color.set(opts.tint);
       // Mixamo FBX malzemeleri genelde Phong ve çok parlak gelir: biraz matlaştır
       if ((c as unknown as THREE.MeshPhongMaterial).isMeshPhongMaterial) (c as unknown as THREE.MeshPhongMaterial).shininess = 8;
@@ -163,7 +214,8 @@ export function buildRig(
     const sideName = side === 'L' ? 'left' : 'right';
     for (const f of FINGERS) {
       const joints = [1, 2, 3]
-        .map(n => allBones.find(b => new RegExp(`${sideName}hand${f}${n}$`, 'i').test(b.name)))
+        .map(n => new RegExp(`${sideName}hand${f}${n}$`, 'i'))
+        .map(re => allBones.find(b => re.test(b.name)))
         .filter((b): b is THREE.Bone => !!b);
       if (joints.length) fingers[side][f] = joints;
     }
@@ -326,6 +378,31 @@ function buildBodyProxies(root: THREE.Object3D, allBones: THREE.Bone[]): BodyPro
   return out;
 }
 
+/**
+ * getWorldPosition/localToWorld her çağrıda kökten kemiğe kadar tüm zinciri yeniden hesaplar. Bir çağrı içinde
+ * (dönüşümler değişmezken) zincir bir kez güncellenir: `fresh` o çağrıda güncellenen düğümleri tutar,
+ * sonuç bit bit aynıdır. Çağrının başında `fresh.clear()` yapılır.
+ */
+const fresh = new Set<THREE.Object3D>();
+const chain: THREE.Object3D[] = [];
+function refreshWorld(obj: THREE.Object3D) {
+  chain.length = 0;
+  for (let o: THREE.Object3D | null = obj; o && !fresh.has(o); o = o.parent) chain.push(o);
+  for (let i = chain.length - 1; i >= 0; i--) {
+    chain[i].updateWorldMatrix(false, false);
+    fresh.add(chain[i]);
+  }
+  return obj.matrixWorld;
+}
+const _p = new THREE.Vector3();
+const _s = new THREE.Vector3();
+/** getWorldPosition / getWorldQuaternion karşılıkları (zincir çağrı başına bir kez güncellenir) */
+const wpos = (o: THREE.Object3D, target: THREE.Vector3) => target.setFromMatrixPosition(refreshWorld(o));
+const wquat = (o: THREE.Object3D, target: THREE.Quaternion) => {
+  refreshWorld(o).decompose(_p, target, _s);
+  return target;
+};
+
 const pv = {
   a: new THREE.Vector3(),
   b: new THREE.Vector3(),
@@ -344,14 +421,19 @@ const pv = {
 export function bodyPenetration(rig: Rig, p: THREE.Vector3, r: number, out: THREE.Vector3): number {
   out.set(0, 0, 0);
   let wsum = 0;
+  fresh.clear();
   for (const px of rig.proxies) {
-    const A = px.bone.localToWorld(pv.a.copy(px.a));
-    const B = px.bone.localToWorld(pv.b.copy(px.b));
+    const mw = refreshWorld(px.bone);
+    const A = pv.a.copy(px.a).applyMatrix4(mw);
+    const B = pv.b.copy(px.b).applyMatrix4(mw);
     pv.ab.subVectors(B, A);
     const t = THREE.MathUtils.clamp(pv.o.subVectors(p, A).dot(pv.ab) / Math.max(1e-8, pv.ab.lengthSq()), 0, 1);
     pv.o.subVectors(p, A).addScaledVector(pv.ab, -t);
     const dist = pv.o.length();
-    px.bone.getWorldQuaternion(pv.q);
+    // en büyük yarıçaptan da uzaksa giriş olamaz (yuvarlama payı bırakılır): dönüş hesabı atlanır
+    const maxR = Math.max(px.rx[0], px.rx[1], px.rf[0], px.rf[1], px.rb[0], px.rb[1]);
+    if (dist > (maxR + r) * (1 + 1e-6) + 1e-9) continue;
+    mw.decompose(_p, pv.q, _s);
     const ox = pv.o.dot(pv.x.copy(px.ax).applyQuaternion(pv.q));
     const oz = pv.o.dot(pv.z.copy(px.az).applyQuaternion(pv.q));
     const perp = Math.hypot(ox, oz);
@@ -385,7 +467,12 @@ const te = new THREE.Euler();
 export function rotateBoneInBodySpace(rig: Rig, bone: THREE.Bone | undefined, pitch: number, yaw: number, roll = 0) {
   if (!bone?.parent || (pitch === 0 && yaw === 0 && roll === 0)) return;
   const offset = tq1.setFromEuler(te.set(pitch, yaw, roll, 'YXZ'));
-  const parentInBody = tq2.copy(rig.root.getWorldQuaternion(tq3)).invert().multiply(bone.parent.getWorldQuaternion(tq3));
+  // kök ve ebeveyn zinciri bir kez güncellenir (getWorldQuaternion ile aynı sonuç)
+  fresh.clear();
+  refreshWorld(rig.root).decompose(_p, tq3, _s);
+  tq2.copy(tq3).invert();
+  refreshWorld(bone.parent).decompose(_p, tq3, _s);
+  const parentInBody = tq2.multiply(tq3);
   const toParent = tq3.copy(parentInBody).invert().multiply(offset).multiply(parentInBody);
   bone.quaternion.premultiply(toParent);
 }
@@ -402,6 +489,7 @@ const iv = {
   q: new THREE.Quaternion(),
   pq: new THREE.Quaternion(),
   orig: new THREE.Quaternion(),
+  cur: new THREE.Quaternion(),
 };
 
 /** Kemiği, dünya uzayında `from` yönünü `to` yönüne çevirecek kadar döndürür (ağırlıklı) */
@@ -410,9 +498,9 @@ function aimBone(bone: THREE.Bone, from: THREE.Vector3, to: THREE.Vector3, weigh
   iv.orig.copy(bone.quaternion);
   const delta = iv.q.setFromUnitVectors(from.normalize(), to.normalize());
   // yerel = ebeveyn⁻¹ · delta · ebeveyn · yerel
-  bone.parent.getWorldQuaternion(iv.pq);
+  wquat(bone.parent, iv.pq);
   bone.quaternion.premultiply(iv.pq).premultiply(delta).premultiply(iv.pq.invert());
-  if (weight < 1) bone.quaternion.slerpQuaternions(iv.orig, bone.quaternion.clone(), weight);
+  if (weight < 1) bone.quaternion.slerpQuaternions(iv.orig, iv.cur.copy(bone.quaternion), weight);
   bone.updateMatrixWorld(true);
 }
 
@@ -429,9 +517,10 @@ export function solveArmIK(
   weight: number,
 ) {
   if (!upper || !lower || !hand || weight <= 0.001) return;
-  upper.getWorldPosition(iv.s);
-  lower.getWorldPosition(iv.e);
-  hand.getWorldPosition(iv.w);
+  fresh.clear();
+  wpos(upper, iv.s);
+  wpos(lower, iv.e);
+  wpos(hand, iv.w);
   const a = iv.s.distanceTo(iv.e);
   const b = iv.e.distanceTo(iv.w);
   iv.t.copy(target);
@@ -446,8 +535,9 @@ export function solveArmIK(
   const elbow = iv.d2.copy(iv.s).addScaledVector(iv.n, a * cosA).addScaledVector(iv.p, a * sinA);
 
   aimBone(upper, iv.d1.subVectors(iv.e, iv.s), elbow.sub(iv.s), weight);
-  lower.getWorldPosition(iv.e);
-  hand.getWorldPosition(iv.w);
+  // aimBone alt ağacı güncelledi: zincir yeniden hesaplanmaz
+  wpos(lower, iv.e);
+  wpos(hand, iv.w);
   aimBone(lower, iv.d1.subVectors(iv.w, iv.e), iv.d2.subVectors(iv.t, iv.e), weight);
 }
 
@@ -468,15 +558,16 @@ const gv = {
   q: new THREE.Quaternion(),
   q2: new THREE.Quaternion(),
   orig: new THREE.Quaternion(),
+  cur: new THREE.Quaternion(),
 };
 
 /** Kemiğe dünya uzayında bir dönüş uygular (ağırlıklı) ve alt kemikleri günceller */
 function rotateBoneWorld(bone: THREE.Bone, delta: THREE.Quaternion, weight: number) {
   if (!bone.parent) return;
   gv.orig.copy(bone.quaternion);
-  bone.parent.getWorldQuaternion(gv.q2);
+  wquat(bone.parent, gv.q2);
   bone.quaternion.premultiply(gv.q2).premultiply(delta).premultiply(gv.q2.invert());
-  if (weight < 1) bone.quaternion.slerpQuaternions(gv.orig, bone.quaternion.clone(), weight);
+  if (weight < 1) bone.quaternion.slerpQuaternions(gv.orig, gv.cur.copy(bone.quaternion), weight);
   bone.updateMatrixWorld(true);
 }
 
@@ -487,9 +578,9 @@ function palmBasis(rig: Rig, side: 'L' | 'R', hand: THREE.Bone) {
   const index = fs.Index?.[0];
   const pinky = fs.Pinky?.[0];
   if (!middle || !index || !pinky) return null;
-  hand.getWorldPosition(gv.h);
-  gv.f.subVectors(middle.getWorldPosition(gv.m), gv.h).normalize();
-  gv.s.subVectors(index.getWorldPosition(gv.i), pinky.getWorldPosition(gv.p)).normalize();
+  wpos(hand, gv.h);
+  gv.f.subVectors(wpos(middle, gv.m), gv.h).normalize();
+  gv.s.subVectors(wpos(index, gv.i), wpos(pinky, gv.p)).normalize();
   // avuç normali (avuç içinin baktığı yön): sol ve sağ elde ayna simetrik
   gv.n.crossVectors(side === 'L' ? gv.f : gv.s, side === 'L' ? gv.s : gv.f).normalize();
   return { f: gv.f, n: gv.n };
@@ -509,6 +600,7 @@ export function poseGrip(
   weight: number,
 ) {
   if (!hand || weight <= 0.001) return;
+  fresh.clear();
   const basis = palmBasis(rig, side, hand);
   if (!basis) return;
   // mevcut ve hedef eksen takımlarından bilek dönüşü
@@ -535,11 +627,11 @@ export function poseGrip(
       const prev = joints[k - 1];
       if (!next && !prev) return;
       if (next) {
-        joint.getWorldPosition(gv.j);
-        next.getWorldPosition(gv.c);
+        wpos(joint, gv.j);
+        wpos(next, gv.c);
       } else {
-        prev!.getWorldPosition(gv.j);
-        joint.getWorldPosition(gv.c);
+        wpos(prev!, gv.j);
+        wpos(joint, gv.c);
       }
       const dir = gv.c.sub(gv.j).normalize();
       const axis = gv.a.crossVectors(dir, pn);
@@ -550,8 +642,10 @@ export function poseGrip(
   }
 }
 
+const NO_MORPHS: { mesh: THREE.Mesh; index: number }[] = [];
+
 export function setMorph(rig: Rig, key: MorphKey, weight: number) {
-  for (const { mesh, index } of rig.morphs[key] ?? []) {
+  for (const { mesh, index } of rig.morphs[key] ?? NO_MORPHS) {
     if (mesh.morphTargetInfluences) mesh.morphTargetInfluences[index] = weight;
   }
 }

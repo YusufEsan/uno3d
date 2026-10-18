@@ -18,6 +18,8 @@ export interface Theme {
   props: 'bar' | 'neon' | 'clouds' | 'plane' | 'balloon' | 'bus' | 'boat';
   /** açık hava: gökyüzü renkleri (tepe, ufuk, alt) ve güneş */
   sky?: { top: string; horizon: string; bottom: string };
+  /** açık hava: gerçek gökyüzü panoraması (Poly Haven, CC0); güneş yönü panoramadaki güneşe göre ayarlıdır */
+  skyMap?: SkyName;
   sun?: { color: string; intensity: number; position: [number, number, number] };
   /** kapalı odada tavandan sarkan aydınlatma: fenerli avize, kristal avize ya da sade abajur */
   fixture?: 'lantern' | 'chandelier' | 'shade';
@@ -26,6 +28,8 @@ export interface Theme {
   /** ortam yansımalarının gücü (kapalı ve loş odalarda düşük) */
   envIntensity?: number;
 }
+
+export type SkyName = 'kloofendal_43d_clear_puresky' | 'kloofendal_48d_partly_cloudy_puresky' | 'qwantani_afternoon_puresky' | 'qwantani_sunset_puresky';
 
 /** kapalı odalarda tavandan sarkan lamba; açık havada güneş kullanılır */
 export const isOutdoor = (t: Theme) => !!t.sky;
@@ -136,7 +140,7 @@ export const THEMES: Record<ThemeId, Theme> = {
   },
   clouds: {
     background: '#8fc8f2',
-    fog: ['#cfe6f7', 14, 38],
+    fog: ['#c8d3e3', 20, 56],
     ambient: ['#fff6e8', 0.55],
     hemi: ['#bfe2ff', '#ffffff', 0.9],
     lamp: { color: '#fff1c9', intensity: 0, swing: 0 },
@@ -149,12 +153,13 @@ export const THEMES: Record<ThemeId, Theme> = {
     bloom: 0.45,
     props: 'clouds',
     sky: { top: '#3f8fe0', horizon: '#d8ecfb', bottom: '#ffffff' },
-    sun: { color: '#fff0d2', intensity: 2.6, position: [5, 9, -4] },
-    envIntensity: 0.6,
+    sun: { color: '#fff0d2', intensity: 2.6, position: [6.4, 8.9, 4.8] },
+    skyMap: 'kloofendal_48d_partly_cloudy_puresky',
+    envIntensity: 0.8,
   },
   plane: {
     background: '#5aa0e6',
-    fog: ['#b9dcf7', 16, 40],
+    fog: ['#b7c0cb', 22, 58],
     ambient: ['#ffffff', 0.5],
     hemi: ['#a9d4ff', '#dfe8f0', 0.8],
     lamp: { color: '#ffffff', intensity: 0, swing: 0 },
@@ -167,8 +172,9 @@ export const THEMES: Record<ThemeId, Theme> = {
     bloom: 0.4,
     props: 'plane',
     sky: { top: '#1f63c6', horizon: '#bfe0fa', bottom: '#eef6fd' },
-    sun: { color: '#ffffff', intensity: 2.8, position: [-6, 10, -3] },
-    envIntensity: 0.6,
+    sun: { color: '#ffffff', intensity: 2.8, position: [7.7, 7.7, 5.2] },
+    skyMap: 'kloofendal_43d_clear_puresky',
+    envIntensity: 0.8,
   },
   balloon: {
     background: '#f7c9a0',
@@ -190,7 +196,7 @@ export const THEMES: Record<ThemeId, Theme> = {
   },
   bus: {
     background: '#9fd0f5',
-    fog: ['#d6ecf9', 14, 38],
+    fog: ['#c9ccd2', 26, 58],
     ambient: ['#ffffff', 0.5],
     hemi: ['#cfe9ff', '#5d6a5a', 0.7],
     lamp: { color: '#fff4dc', intensity: 0, swing: 0 },
@@ -203,12 +209,13 @@ export const THEMES: Record<ThemeId, Theme> = {
     bloom: 0.4,
     props: 'bus',
     sky: { top: '#4a95dc', horizon: '#dff0fb', bottom: '#cfe3c9' },
-    sun: { color: '#fff3dc', intensity: 2.4, position: [4, 8, 5] },
-    envIntensity: 0.6,
+    sun: { color: '#fff3dc', intensity: 2.4, position: [7.3, 7.9, 5.3] },
+    skyMap: 'qwantani_afternoon_puresky',
+    envIntensity: 0.8,
   },
   boat: {
     background: '#f2a77a',
-    fog: ['#f3c29f', 16, 40],
+    fog: ['#c9b8a2', 24, 58],
     ambient: ['#ffe2c8', 0.5],
     hemi: ['#ffcfa6', '#2b5a78', 0.75],
     lamp: { color: '#ffb070', intensity: 0, swing: 0 },
@@ -221,7 +228,9 @@ export const THEMES: Record<ThemeId, Theme> = {
     bloom: 0.55,
     props: 'boat',
     sky: { top: '#5b6fb8', horizon: '#ffb987', bottom: '#f5c4a0' },
-    sun: { color: '#ffc58a', intensity: 2.5, position: [-8, 4, -7] },
-    envIntensity: 0.6,
+    // panoramadaki güneş ufukta (3.6°); ışık masayı aydınlatsın diye aynı yönden biraz daha yüksekten gelir
+    sun: { color: '#ffb877', intensity: 2.6, position: [9.6, 2.5, 6.8] },
+    skyMap: 'qwantani_sunset_puresky',
+    envIntensity: 0.8,
   },
 };

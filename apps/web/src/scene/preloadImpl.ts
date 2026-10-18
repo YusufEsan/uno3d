@@ -3,7 +3,8 @@ import { useLoader } from '@react-three/fiber';
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
 import { useApp } from '../store/useApp';
 import { ANIMATIONS, CHARACTERS } from './characters';
-import { preloadCharacterScene } from './characterModel';
+import { useGLTF } from '@react-three/drei';
+import { preloadCharacterScene, useCharacterScene } from './characterModel';
 import { MODELS, preloadCoreModels } from './models';
 
 let started = false;
@@ -35,8 +36,36 @@ export async function preloadScene() {
   const fbxUrls = Object.values(ANIMATIONS).filter(u => !/\.json(\?|$)/i.test(u));
   useLoader.preload(THREE.FileLoader, jsonUrls);
   useLoader.preload(FBXLoader, fbxUrls);
-  for (const c of CHARACTERS) if (c.kind === 'mixamo') preloadCharacterScene(c.url);
+  const chars = CHARACTERS.filter(c => c.kind === 'mixamo');
+  for (const c of chars) preloadCharacterScene(c.url);
   preloadCoreModels();
-  await new Promise(r => setTimeout(r, 600));
+  // sabit bir süre yerine ayrıştırma gerçekten bitene kadar beklenir: oyun açılınca karakterler askıda kalmaz.
+  // Yavaş cihazda sonsuza dek beklenmesin diye üst sınır var.
+  await Promise.race([
+    Promise.all([
+      settle(() => useLoader(THREE.FileLoader, jsonUrls)),
+      settle(() => useLoader(FBXLoader, fbxUrls)),
+      ...chars.map(c => settle(() => useCharacterScene(c.url))),
+      settle(() => useGLTF(MODELS.table)),
+      settle(() => useGLTF(MODELS.chair)),
+    ]),
+    new Promise(r => setTimeout(r, 8000)),
+  ]);
   useApp.setState({ assetsReady: true });
+}
+
+/**
+ * useLoader/useGLTF gerçek React hook'u değildir; suspend-react önbelleğini okur. Hazır değilse fırlattığı
+ * söz beklenir (önbellekteki aynı yükleme, yeniden indirme yok). Hata olursa beklemeyi bırakır.
+ */
+async function settle(read: () => unknown) {
+  for (let i = 0; i < 20; i++) {
+    try {
+      read();
+      return;
+    } catch (e) {
+      if (!(e instanceof Promise)) return;
+      await e.catch(() => undefined);
+    }
+  }
 }

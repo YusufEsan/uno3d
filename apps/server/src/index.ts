@@ -20,6 +20,10 @@ const io = new Server(http, {
   cors: { origin: allowedOrigins, credentials: false },
   // tek bir mesaj en fazla 100 KB olabilir: kötüye kullanılan büyük paketleri baştan keser
   maxHttpBufferSize: 100_000,
+  // mesajlar küçük (en büyüğü birkaç KB, çoğu bakış ~50 B): sıkıştırma her pakete CPU ve gecikme ekler, kazancı yok
+  perMessageDeflate: false,
+  // istemci socket.io'yu kendi paketinden yükler; /socket.io/socket.io.js sunulmaz
+  serveClient: false,
 });
 app.disable('x-powered-by');
 
@@ -30,6 +34,8 @@ app.get('/health', (_req, res) => {
 // Üretimde derlenmiş web uygulamasını da aynı sunucu yayınlar
 const webDist = resolve(dirname(fileURLToPath(import.meta.url)), '../../web/dist');
 if (existsSync(webDist)) {
+  // Vite'ın ürettiği dosyaların adında içerik özeti var: modeller ve kodlar bir yıl önbellekten gelir
+  app.use('/assets', express.static(resolve(webDist, 'assets'), { immutable: true, maxAge: '1y', index: false }));
   app.use(express.static(webDist));
   app.use((_req, res) => res.sendFile(resolve(webDist, 'index.html')));
 }

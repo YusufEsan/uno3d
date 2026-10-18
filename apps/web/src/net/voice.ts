@@ -1,5 +1,5 @@
 import type { RoomState } from '@uno/protocol';
-import { useApp } from '../store/useApp';
+import { SPEAKING_THRESHOLD, useApp } from '../store/useApp';
 import { socket } from './socket';
 
 const ICE: RTCConfiguration = {
@@ -15,6 +15,17 @@ interface Peer {
 }
 
 type Signal = { sdp?: RTCSessionDescriptionInit; ice?: RTCIceCandidateInit };
+
+/** Oyuncu listesi ya da birinin konuşuyor/sustu durumu değişti mi (React abonelerinin görebileceği fark) */
+function speakingChanged(cur: Record<string, number>, next: Record<string, number>) {
+  let n = 0;
+  for (const id in next) {
+    const c = cur[id];
+    if (c === undefined || c > SPEAKING_THRESHOLD !== next[id] > SPEAKING_THRESHOLD) return true;
+    n++;
+  }
+  return n !== Object.keys(cur).length;
+}
 
 /**
  * Masadaki insan oyuncular arasında doğrudan (mesh) sesli sohbet.
@@ -41,24 +52,48 @@ class VoiceMesh {
     return an;
   }
 
+  /** ölçüm tamponu: her ölçümde yeni dizi açılmaz */
+  private buf = new Uint8Array(512);
+
   private level(an: AnalyserNode | null) {
     if (!an) return 0;
-    const buf = new Uint8Array(an.fftSize);
+    if (this.buf.length !== an.fftSize) this.buf = new Uint8Array(an.fftSize);
+    const buf = this.buf;
     an.getByteTimeDomainData(buf);
     let sum = 0;
-    for (const v of buf) sum += ((v - 128) / 128) ** 2;
-    return Math.min(1, Math.sqrt(sum / buf.length) * 6);
+    for (let i = 0; i < buf.length; i++) {
+      const v = (buf[i] - 128) / 128;
+      sum += v * v;
+    }
+    return Math.min(1, Math.round(Math.sqrt(sum / buf.length) * 600) / 100);
   }
 
   private startMeter() {
     if (this.meter !== null) return;
-    this.meter = window.setInterval(() => {
-      const me = useApp.getState().playerId;
-      const next: Record<string, number> = {};
-      for (const [id, p] of this.peers) next[id] = +this.level(p.analyser).toFixed(2);
-      if (me) next[me] = useApp.getState().micOn ? +this.level(this.localAnalyser).toFixed(2) : 0;
-      useApp.setState({ speaking: next });
-    }, 90);
+    this.meter = window.setInterval(() => this.tickMeter(), 90);
+  }
+
+  private stopMeter() {
+    if (this.meter === null) return;
+    clearInterval(this.meter);
+    this.meter = null;
+  }
+
+  /**
+   * Ses düzeylerini ölçer. Düzeyler mağazadaki nesnede yerinde güncellenir (avatarlar her karede okur);
+   * abonelere yalnızca biri konuşmaya başlayınca/susunca ya da oyuncu listesi değişince haber verilir.
+   */
+  private tickMeter() {
+    const st = useApp.getState();
+    const me = st.playerId;
+    const next: Record<string, number> = {};
+    for (const [id, p] of this.peers) next[id] = this.level(p.analyser);
+    if (me) next[me] = st.micOn ? this.level(this.localAnalyser) : 0;
+    const cur = st.speaking;
+    if (speakingChanged(cur, next)) useApp.setState({ speaking: next });
+    else for (const id in next) cur[id] = next[id];
+    // kimseyle bağlantı yok ve mikrofon kapalı: ölçecek bir şey kalmadı (yeni bağlantı ya da mikrofon yeniden başlatır)
+    if (this.peers.size === 0 && !st.micOn) this.stopMeter();
   }
 
   /** Bağlı tüm oyuncuların sesini ayarlar */

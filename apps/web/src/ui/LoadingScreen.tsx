@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import { THEMES } from '@uno/protocol';
 import { useApp } from '../store/useApp';
 
@@ -30,8 +30,10 @@ export function LoadingScreen({ show }: { show: boolean }) {
   const themeId = useApp(s => s.room?.theme);
   const [mounted, setMounted] = useState(show);
   const [tip, setTip] = useState(0);
-  // ekranda gösterilen yüzde, gerçek ilerlemeye doğru akarak sayar
-  const [shown, setShown] = useState(0);
+  // ekranda gösterilen yüzde, gerçek ilerlemeye doğru akarak sayar;
+  // ara değer ref'te tutulur, ekran yalnızca tam sayı yüzde değişince yeniden çizilir
+  const shown = useRef(0);
+  const [pct, setPct] = useState(0);
 
   useEffect(() => {
     if (show) {
@@ -53,18 +55,18 @@ export function LoadingScreen({ show }: { show: boolean }) {
     if (!mounted) return;
     let raf = 0;
     const step = () => {
-      setShown(v => {
-        const next = v + (target - v) * 0.12;
-        return Math.abs(target - next) < 0.002 ? target : next;
-      });
-      raf = requestAnimationFrame(step);
+      const v = shown.current;
+      const next = v + (target - v) * 0.12;
+      shown.current = Math.abs(target - next) < 0.002 ? target : next;
+      setPct(Math.round(shown.current * 100));
+      // hedefe varınca döngü durur: yükleme beklerken her kare boşuna çalışmaz
+      if (shown.current !== target) raf = requestAnimationFrame(step);
     };
     raf = requestAnimationFrame(step);
     return () => cancelAnimationFrame(raf);
   }, [target, mounted]);
 
   if (!mounted) return null;
-  const pct = Math.round(shown * 100);
   const themeName = THEMES.find(t => t.id === themeId)?.name ?? 'Masa';
 
   return (

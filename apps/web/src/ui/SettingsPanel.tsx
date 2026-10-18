@@ -13,11 +13,14 @@ export function SettingsButton() {
       aria-label="Ayarlar"
       onClick={() => useApp.setState({ settingsOpen: true })}
     >
+      {/* yatay kaydırıcılar simgesi: (12,12) etrafında simetrik çizildi, düğmede tam ortada durur */}
       <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-        <path
-          d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7zm8.2 4.3l1.8-1.4-1.9-3.3-2.2.8a7 7 0 0 0-1.6-.9L16 5.9h-3.8l-.4 2.3c-.6.2-1.1.5-1.6.9l-2.2-.8-1.9 3.3 1.8 1.4a7 7 0 0 0 0 1.9l-1.8 1.4 1.9 3.3 2.2-.8c.5.4 1 .7 1.6.9l.4 2.3H16l.4-2.3c.6-.2 1.1-.5 1.6-.9l2.2.8 1.9-3.3-1.8-1.4a7 7 0 0 0 0-1.9z"
-          fill="currentColor"
-        />
+        <g fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+          <path d="M4 7h2M10 7h10M4 12h6M14 12h6M4 17h10M18 17h2" />
+          <circle cx="8" cy="7" r="2" />
+          <circle cx="12" cy="12" r="2" />
+          <circle cx="16" cy="17" r="2" />
+        </g>
       </svg>
     </button>
   );

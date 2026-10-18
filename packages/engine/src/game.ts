@@ -178,13 +178,26 @@ export function createGame(
 
 const fail = (error: string): ApplyResult => ({ ok: false, error });
 
+/**
+ * Hamle için durumun kopyası: diziler ve oyuncular yeni, kartlar ve kurallar paylaşılır (hiç değiştirilmezler).
+ * JSON ile derin kopyadan çok daha ucuz: her hamlede ~108 kart yeniden yazılıp okunmaz.
+ */
+function cloneState(s: GameState): GameState {
+  return {
+    ...s,
+    players: s.players.map(p => ({ ...p, hand: p.hand.slice() })),
+    drawPile: s.drawPile.slice(),
+    discardPile: s.discardPile.slice(),
+  };
+}
+
 export function applyAction(state: GameState, playerId: string, action: Action): ApplyResult {
   if (state.phase !== 'playing') return fail('Oyun bitti');
   const idx = state.players.findIndex(p => p.id === playerId);
   if (idx < 0) return fail('Bu oyunda değilsin');
   if (state.current !== idx) return fail('Sıra sende değil');
 
-  const s: GameState = JSON.parse(JSON.stringify(state)); // durum düz JSON, derin kopya yeterli
+  const s = cloneState(state);
   const ev: GameEvent[] = [];
   const player = s.players[idx];
 

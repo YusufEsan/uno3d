@@ -1,14 +1,14 @@
-import { Suspense, useEffect, useMemo, useRef } from 'react';
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { PerformanceMonitor } from '@react-three/drei';
-import { Bloom, EffectComposer, HueSaturation, SMAA, ToneMapping, Vignette } from '@react-three/postprocessing';
-import { ToneMappingMode } from 'postprocessing';
+import { Bloom, EffectComposer, HueSaturation, ToneMapping, Vignette } from '@react-three/postprocessing';
+import { ToneMappingMode, type BloomEffect } from 'postprocessing';
 import * as THREE from 'three';
 import { director } from '../game/director';
 import { EYE_HEIGHT, SEAT_R, TABLE_Y, headPos, relativeOrder, seatFrame } from '../game/layout';
-import { socket } from '../net/socket';
+import { sendLook } from '../net/socket';
 import { seatedPlayers, useApp, useQuality, type QualityLevel } from '../store/useApp';
 import { Avatar } from './Avatar';
+import { END_ORBIT, HOME_ORBIT, cameraBounds, clampSegment, orbitRadius } from './cameraBounds';
 import { CHARACTERS, assignCharacters } from './characters';
 import { useCharacterScene } from './characterModel';
 import { Chair } from './Chair';
@@ -33,14 +33,18 @@ function ShaderWarmup() {
   const scene = useThree(s => s.scene);
   const camera = useThree(s => s.camera);
   const group = useRef<THREE.Group>(null);
+  const [done, setDone] = useState(false);
   const models = CHARACTERS.filter(c => c.kind === 'mixamo').map(c => useCharacterScene(c.url));
   useEffect(() => {
     const g = group.current;
     if (!g) return;
     gl.compile(scene, camera);
-    // derleme bitti: kaynaklar kalsın, model çizilmesin
+    // derleme bitti: modeller sahneden çıkarılır (r3f primitive'leri dispose etmez, kaynaklar kalır);
+    // görünmez olsalar da her karede yüzlerce kemiğin matrisi güncelleniyordu
     g.visible = false;
+    setDone(true);
   }, [gl, scene, camera]);
+  if (done) return null;
   return (
     <group ref={group} position={[0, -200, 0]}>
       {models.map((m, i) => (
@@ -54,14 +58,18 @@ export function GameCanvas() {
   const themeId = useApp(s => s.room?.theme ?? 'meyhane');
   const theme = THEMES[themeId];
   const quality = useQuality();
+  const viewport = useViewport();
   return (
     <Canvas
       // three r182'den beri PCFSoftShadowMap yok (r3f'nin `shadows` varsayılanı); PCF artık zaten yumuşak örnekliyor
       shadows="percentage"
-      dpr={1}
+      // dpr prop olarak verilir: r3f her yeniden çizimde prop'taki değere döner (setDpr ile verilen kaybolurdu)
+      dpr={qualityDpr(quality, viewport)}
       camera={{ fov: 58, near: 0.03, far: 60, position: [0, 2, 3] }}
-      // ACES renkleri soldurur; "nötr" ton eşleme parlak tonları sıkıştırırken renk doygunluğunu korur
-      gl={{ antialias: true, powerPreference: 'high-performance', toneMapping: THREE.NeutralToneMapping }}
+      // ACES renkleri soldurur; "nötr" ton eşleme parlak tonları sıkıştırırken renk doygunluğunu korur.
+      // antialias kapalı: yüksek/ortada kenar yumuşatma efekt zincirinin MSAA'sıyla yapılır, tuvalin kendi
+      // MSAA tamponu her karede boşuna çözülüyordu. alpha kapalı: tuval opak, tarayıcı sayfayla harmanlamaz.
+      gl={{ antialias: false, alpha: false, powerPreference: 'high-performance', toneMapping: THREE.NeutralToneMapping }}
       onPointerDown={e => {
         if (e.button === 0) director.click();
       }}
@@ -83,50 +91,141 @@ export function GameCanvas() {
       <CameraRig />
       <EndCelebration />
       <DirectorDriver />
-      {quality === 'high' && (
-        <EffectComposer multisampling={4}>
-          <Bloom mipmapBlur luminanceThreshold={1.2} intensity={theme.bloom} />
-          {/* efekt zinciri renderer'ın ton eşlemesini kapatır: aynısı burada uygulanır */}
-          <ToneMapping mode={ToneMappingMode.NEUTRAL} />
-          <HueSaturation saturation={0.12} />
-          <Vignette offset={0.3} darkness={0.55} />
-        </EffectComposer>
-      )}
-      {quality === 'medium' && (
-        <EffectComposer multisampling={0}>
-          <Bloom luminanceThreshold={1.2} intensity={theme.bloom * 0.8} />
-          <ToneMapping mode={ToneMappingMode.NEUTRAL} />
-          <HueSaturation saturation={0.12} />
-          <Vignette offset={0.3} darkness={0.55} />
-          <SMAA />
-        </EffectComposer>
-      )}
+      {/* düşük kalitede efekt zinciri yok: renderer doğrudan ekrana çizer ve ton eşlemeyi kendisi yapar */}
+      {quality !== 'low' && <PostFx key={quality} quality={quality} bloom={theme.bloom} />}
     </Canvas>
   );
 }
 
-const ORDER: QualityLevel[] = ['low', 'medium', 'high'];
-
-/** "Otomatik" kalitede kare hızı düşerse kaliteyi indirir, yükselirse artırır */
-function AutoQuality() {
-  const step = (dir: 1 | -1) => {
-    const s = useApp.getState();
-    // sekme arka plandayken tarayıcı kare hızını kısar: bunu yavaşlık sanma
-    if (s.quality !== 'auto' || document.hidden) return;
-    const i = Math.max(0, Math.min(ORDER.length - 1, ORDER.indexOf(s.autoLevel) + dir));
-    if (ORDER[i] !== s.autoLevel) useApp.setState({ autoLevel: ORDER[i] });
+/**
+ * Efekt zinciri: hepsi tek bir EffectPass'ta birleşir (Bloom + ton eşleme + doygunluk + vinyet).
+ * Kalite değişince `key` ile baştan kurulur: eski geçişler ve hedefler tamamen atılır.
+ * Kenar yumuşatma MSAA ile: yüksekte 4, ortada 2 örnek. (Eski SMAA zincirin sonunda ham HDR
+ * tampondan örnek aldığından kenar piksellerinde ton eşleme ve renk ayarı kayboluyordu.)
+ */
+function PostFx({ quality, bloom }: { quality: 'high' | 'medium'; bloom: number }) {
+  const high = quality === 'high';
+  // ortada parlaklık eşiği yarım çözünürlükte çıkarılır: tam çözünürlüklü bir HDR geçişi daha az
+  const bloomRef = (e: BloomEffect | null) => {
+    if (e) e.luminancePass.resolution.scale = high ? 1 : 0.5;
   };
   return (
-    <PerformanceMonitor
-      bounds={() => [45, 58]}
-      flipflops={4}
-      onDecline={() => step(-1)}
-      onIncline={() => step(1)}
-      onFallback={() => {
-        if (useApp.getState().quality === 'auto' && !document.hidden) useApp.setState({ autoLevel: 'low' });
-      }}
-    />
+    <EffectComposer multisampling={high ? 4 : 2}>
+      <Bloom ref={bloomRef} mipmapBlur luminanceThreshold={1.2} intensity={high ? bloom : bloom * 0.8} />
+      {/* efekt zinciri renderer'ın ton eşlemesini kapatır: aynısı burada uygulanır */}
+      <ToneMapping mode={ToneMappingMode.NEUTRAL} />
+      <HueSaturation saturation={0.12} />
+      <Vignette offset={0.3} darkness={0.55} />
+    </EffectComposer>
   );
+}
+
+/** Kaliteye göre en yüksek piksel oranı */
+const DPR_CAP: Record<QualityLevel, number> = { high: 2, medium: 1.25, low: 0.85 };
+/** Orta ve düşükte toplam piksel sınırı: 1440p/4K ekranlarda çözünürlük buna göre iner (1080p'de değişmez) */
+const PIXEL_BUDGET: Record<QualityLevel, number> = { high: Infinity, medium: 3.0e6, low: 1.5e6 };
+
+function qualityDpr(q: QualityLevel, vp: { px: number; native: number }) {
+  const budget = Math.sqrt(PIXEL_BUDGET[q] / Math.max(1, vp.px));
+  const dpr = Math.min(DPR_CAP[q], vp.native, budget);
+  return Math.max(0.5, Math.round(dpr * 20) / 20);
+}
+
+/** Pencerenin CSS piksel sayısı ve cihaz piksel oranı; yalnızca belirgin değişimlerde güncellenir */
+function useViewport() {
+  const read = () => ({ px: window.innerWidth * window.innerHeight, native: window.devicePixelRatio || 1 });
+  const [vp, setVp] = useState(read);
+  useEffect(() => {
+    const onResize = () =>
+      setVp(prev => {
+        const next = read();
+        return next.native !== prev.native || Math.abs(next.px - prev.px) > prev.px * 0.1 ? next : prev;
+      });
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  return vp;
+}
+
+const ORDER: QualityLevel[] = ['low', 'medium', 'high'];
+
+/** pencere ortalaması bunun altına düşerse kalite bir kademe iner */
+const DOWN_FPS = 45;
+/** bunun da altındaysa doğrudan en düşüğe */
+const PANIC_FPS = 25;
+/** üst kademeye çıkmak için art arda UP_WINDOWS pencere boyunca en az bu kadar */
+const UP_FPS = 56;
+const UP_WINDOWS = 4;
+/** ölçüm penceresi (s) */
+const WINDOW = 1.5;
+/** kalite değişince shader derlemesi bitsin diye ölçüme ara (s) */
+const SETTLE = 2;
+/** bundan uzun tek kareler (yükleme, çöp toplama, sekme dönüşü) ortalamaya katılmaz (s) */
+const HITCH = 0.25;
+
+/**
+ * "Otomatik" kalitede kare hızını izler: düşüş 1,5 s'lik pencerede hemen fark edilir; yükselmek için
+ * ~6 s iyi kare hızı gerekir. Kaldıramadığı kademeyi giderek uzayan bir süre (20 s, 60 s, 180 s…) yeniden
+ * denemez: iki kademe arasında gidip gelme olmaz.
+ */
+function AutoQuality() {
+  const m = useRef({
+    level: null as QualityLevel | null,
+    settle: SETTLE,
+    time: 0,
+    frames: 0,
+    good: 0,
+    fails: { low: 0, medium: 0, high: 0 } as Record<QualityLevel, number>,
+    blockedUntil: { low: 0, medium: 0, high: 0 } as Record<QualityLevel, number>,
+  });
+  useEffect(() => {
+    // sekme arka plandayken tarayıcı kare hızını kısar: dönüşte ölçüm baştan başlar
+    const onVisibility = () => {
+      const a = m.current;
+      a.time = a.frames = a.good = 0;
+      a.settle = SETTLE;
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, []);
+  useFrame((_, dt) => {
+    const s = useApp.getState();
+    const a = m.current;
+    // elle seçilmiş kalite, gizli sekme ve yükleme ekranı (sahne arkada yükleniyor) ölçülmez
+    if (s.quality !== 'auto' || document.hidden || (s.room && !s.assetsReady) || a.level !== s.autoLevel) {
+      a.level = s.quality === 'auto' ? s.autoLevel : null;
+      a.time = a.frames = a.good = 0;
+      a.settle = SETTLE;
+      return;
+    }
+    if (a.settle > 0) {
+      a.settle -= dt;
+      return;
+    }
+    if (dt > HITCH) return;
+    a.time += dt;
+    a.frames++;
+    if (a.time < WINDOW) return;
+    const fps = a.frames / a.time;
+    a.time = a.frames = 0;
+    const i = ORDER.indexOf(s.autoLevel);
+    const now = performance.now() / 1000;
+    if (fps < DOWN_FPS) {
+      a.good = 0;
+      if (i === 0) return;
+      const failed = s.autoLevel;
+      a.fails[failed]++;
+      a.blockedUntil[failed] = now + Math.min(600, 20 * 3 ** (a.fails[failed] - 1));
+      useApp.setState({ autoLevel: fps < PANIC_FPS ? 'low' : ORDER[i - 1] });
+      return;
+    }
+    a.good = fps >= UP_FPS ? a.good + 1 : 0;
+    if (a.good >= UP_WINDOWS && i < ORDER.length - 1 && now >= a.blockedUntil[ORDER[i + 1]]) {
+      a.good = 0;
+      useApp.setState({ autoLevel: ORDER[i + 1] });
+    }
+  });
+  return null;
 }
 
 /** Saniyede bir kare hızını arayüze bildirir */
@@ -137,7 +236,9 @@ function FpsMeter() {
     a.frames++;
     a.time += dt;
     if (a.time >= 1) {
-      useApp.setState({ fps: Math.round(a.frames / a.time) });
+      const fps = Math.round(a.frames / a.time);
+      // değişmediyse store'a yazma: abonelerin seçicileri boşuna çalışmasın
+      if (fps !== useApp.getState().fps) useApp.setState({ fps });
       a.frames = 0;
       a.time = 0;
     }
@@ -145,15 +246,13 @@ function FpsMeter() {
   return null;
 }
 
-/** Çözünürlük ve gölgeleri kaliteye göre ayarlar */
+/** Gölgeleri kaliteye göre ayarlar (çözünürlük Canvas'ın dpr prop'unda) */
 function QualityController() {
   const quality = useQuality();
   const gl = useThree(s => s.gl);
   const scene = useThree(s => s.scene);
-  const setDpr = useThree(s => s.setDpr);
+  const frame = useRef(0);
   useEffect(() => {
-    const native = window.devicePixelRatio || 1;
-    setDpr(quality === 'high' ? Math.min(2, native) : quality === 'medium' ? Math.min(1.25, native) : Math.min(0.85, native));
     const shadows = quality !== 'low';
     if (gl.shadowMap.enabled !== shadows) {
       gl.shadowMap.enabled = shadows;
@@ -163,7 +262,13 @@ function QualityController() {
         if (m) (Array.isArray(m) ? m : [m]).forEach(x => (x.needsUpdate = true));
       });
     }
-  }, [quality, gl, scene, setDpr]);
+    // ortada gölge haritası iki karede bir yenilenir (karakterler ve kartlar her karede ikinci kez çizilmez)
+    gl.shadowMap.autoUpdate = quality === 'high';
+    gl.shadowMap.needsUpdate = true;
+  }, [quality, gl, scene]);
+  useFrame(() => {
+    if (!gl.shadowMap.autoUpdate && ++frame.current % 2 === 0) gl.shadowMap.needsUpdate = true;
+  });
   return null;
 }
 
@@ -195,9 +300,9 @@ const FOCUS_DELAY = 0.45;
 /** Koltuğundan bakış: fare ekran kenarlarına gidince baş o yöne döner (Liar's Bar tarzı). */
 function CameraRig() {
   const camera = useThree(s => s.camera);
-  const look = useRef({ yaw: 0, pitch: 0, dwell: 0, focus: 0, orbit: 0, endT: 0, topT: 0, sentYaw: 9, sentPitch: 9, lastSend: 0 });
+  const look = useRef({ yaw: 0, pitch: 0, dwell: 0, focus: 0, orbit: 0, endT: 0, endA: 0, endR: 0, endY: 0, topT: 0, sentYaw: 9, sentPitch: 9, lastSend: 0 });
   const euler = useMemo(() => new THREE.Euler(0, 0, 0, 'YXZ'), []);
-  const orbit = useMemo(() => ({ pos: new THREE.Vector3(), q: new THREE.Quaternion(), m: new THREE.Matrix4(), center: new THREE.Vector3(0, 1.0, 0) }), []);
+  const orbit = useMemo(() => ({ pos: new THREE.Vector3(), q: new THREE.Quaternion(), m: new THREE.Matrix4(), center: new THREE.Vector3(0, 1.0, 0), base: new THREE.Vector3(), want: new THREE.Vector3() }), []);
 
   useFrame((state, dt) => {
     const st = useApp.getState();
@@ -211,21 +316,34 @@ function CameraRig() {
     }
     // oyun sonunda kartlar masaya serilir, izleme modunda bile görünsünler
     director.hideOwnHand = st.watchSelf && st.view?.phase !== 'ended';
+    // kamera engellerin içinden geçmesin: temanın sabit hacimleri ve oturan oyuncular (bkz. cameraBounds)
+    const scene = THEMES[st.room?.theme ?? 'meyhane']?.props ?? 'bar';
+    const seats = seatedPlayers(st.room).length;
     if (!st.room) {
-      // ana ekranda masanın etrafında yavaşça dönen kamera
+      // ana ekranda masanın etrafında yavaşça dönen kamera; yarıçap engellerin önünde yumuşakça kısalır
       l.orbit += dt * 0.07;
-      camera.position.set(Math.sin(l.orbit) * 3.1, 2.05, Math.cos(l.orbit) * 3.1);
+      const r = orbitRadius(cameraBounds(scene, 0), HOME_ORBIT, l.orbit);
+      camera.position.set(Math.sin(l.orbit) * r, HOME_ORBIT.y, Math.cos(l.orbit) * r);
       camera.lookAt(0, 0.95, 0);
       return;
     }
 
     // oyun sonu: kamera senin arkandan başlayıp masanın etrafında döner, herkesin tepkisi görünür
+    // kamera bulunduğu açıdan yörüngeye açılır (yarıçap ve yükseklik ayrı ayrı yaklaşır, düz çizgide kestirmez);
+    // yarıçap o açıdaki güvenli sınırı hiç aşmaz
     if (st.view?.phase === 'ended') {
+      if (l.endT === 0) {
+        l.endA = Math.atan2(camera.position.x, camera.position.z);
+        l.endR = Math.hypot(camera.position.x, camera.position.z);
+        l.endY = camera.position.y;
+      }
       l.endT += dt;
-      const a = l.endT * 0.22;
-      orbit.pos.set(Math.sin(a) * 2.55, 1.75, Math.cos(a) * 2.55);
+      const a = l.endA + l.endT * 0.22;
+      const R = orbitRadius(cameraBounds(scene, seats), END_ORBIT, a);
+      l.endR = Math.min(R, l.endR + (R - l.endR) * Math.min(1, dt * 1.5));
+      l.endY += (END_ORBIT.y - l.endY) * Math.min(1, dt * 2);
+      camera.position.set(Math.sin(a) * l.endR, l.endY, Math.cos(a) * l.endR);
       const k = Math.min(1, dt * 1.5);
-      camera.position.lerp(orbit.pos, k);
       orbit.m.lookAt(camera.position, orbit.center, camera.up);
       orbit.q.setFromRotationMatrix(orbit.m);
       camera.quaternion.slerp(orbit.q, k);
@@ -236,9 +354,11 @@ function CameraRig() {
     // kendimi izleme: kamera masanın karşı tarafından, biraz yukarıdan kendi koltuğuna bakar: karakter
     // sandalyesiyle birlikte bütün olarak görünür
     if (st.watchSelf) {
-      const wp = tmpWatchPos;
-      wp.set(0, EYE_HEIGHT + 0.6, -0.55);
-      camera.position.lerp(wp, Math.min(1, dt * 6));
+      // hedef, masanın ortasının üstünden çizilen doğru boyunca engellerin önünde durur
+      orbit.base.set(0, EYE_HEIGHT + 0.3, 0);
+      orbit.want.set(0, EYE_HEIGHT + 0.6, -0.55);
+      clampSegment(cameraBounds(scene, seats, true), orbit.base, orbit.want, tmpWatchPos);
+      camera.position.lerp(tmpWatchPos, Math.min(1, dt * 6));
       camera.lookAt(0, 0.92, SEAT_R);
       return;
     }
@@ -264,7 +384,10 @@ function CameraRig() {
     // yukarıdan görünüm: kamera yumuşakça yükselir ve masanın ortasına daha dik bakar
     l.topT += ((st.topView ? 1 : 0) - l.topT) * Math.min(1, dt * 4);
     const lift = l.topT * 0.4;
-    camera.position.set((Math.random() - 0.5) * shake, EYE_HEIGHT + lift + (Math.random() - 0.5) * shake, SEAT_R + 0.02 + l.topT * 0.12);
+    // yükselme ve sarsıntı koltuktaki göz noktasından başlar; bir engele (otobüs tavanı vb.) değerse orada durur
+    orbit.base.set(0, EYE_HEIGHT, SEAT_R + 0.02);
+    orbit.want.set((Math.random() - 0.5) * shake, EYE_HEIGHT + lift + (Math.random() - 0.5) * shake, SEAT_R + 0.02 + l.topT * 0.12);
+    clampSegment(cameraBounds(scene, seats, true), orbit.base, orbit.want, camera.position);
     euler.set(-0.3 - l.topT * 0.32 + l.pitch, l.yaw, 0);
     camera.quaternion.setFromEuler(euler);
 
@@ -274,7 +397,7 @@ function CameraRig() {
       l.lastSend = now;
       l.sentYaw = l.yaw;
       l.sentPitch = l.pitch;
-      socket.volatile.emit('look', { yaw: +l.yaw.toFixed(3), pitch: +l.pitch.toFixed(3) });
+      sendLook(l.yaw, l.pitch);
     }
   });
   return null;

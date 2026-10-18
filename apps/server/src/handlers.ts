@@ -9,17 +9,23 @@ import type { Room } from './Room';
 const sessions = new Map<string, string>();
 const MAX_SESSIONS = 20000;
 
-/** Basit kayan pencere hız sınırı: en fazla `max` istek, `windowMs` içinde */
+/**
+ * Kayan pencere hız sınırı: en fazla `max` istek, `windowMs` içinde.
+ * Son `max` kabulün zamanı halkada tutulur: her istekte sabit iş, yeni dizi oluşmaz (bakış saniyede onlarca gelir).
+ */
 function makeLimiter(max: number, windowMs: number) {
-  let hits: number[] = [];
+  const hits = new Array<number>(max).fill(-Infinity);
+  let i = 0; // en eski kabulün yeri
   return () => {
     const now = Date.now();
-    hits = hits.filter(t => now - t < windowMs);
-    if (hits.length >= max) return false;
-    hits.push(now);
+    if (now - hits[i] < windowMs) return false;
+    hits[i] = now;
+    i = (i + 1) % max;
     return true;
   };
 }
+
+const OK = { ok: true } as const;
 
 export function registerHandlers(io: Server) {
   const rooms = new RoomManager(io);
@@ -40,13 +46,16 @@ export function registerHandlers(io: Server) {
 
   io.on('connection', (socket: Socket) => {
     const pid: string = socket.data.playerId;
-    // her bağlantının kendi hız sınırları: sohbet, bakış, katılma denemesi, sinyal, hamle
+    // her bağlantının kendi hız sınırları: sohbet, bakış, katılma denemesi, sinyal, hamle,
+    // lobi ayarları (her biri herkese oda durumu yayar) ve tam durum isteği
     const limits = {
       chat: makeLimiter(8, 10_000),
       look: makeLimiter(30, 1_000),
       join: makeLimiter(10, 60_000),
       signal: makeLimiter(40, 1_000),
       action: makeLimiter(20, 1_000),
+      lobby: makeLimiter(20, 5_000),
+      sync: makeLimiter(10, 5_000),
     };
     socket.emit('session', { playerId: pid });
     rooms.onConnect(pid, socket);
@@ -64,7 +73,7 @@ export function registerHandlers(io: Server) {
         const parsed = schema.safeParse(payload ?? {});
         if (!parsed.success) return reply({ ok: false, error: 'Geçersiz istek' });
         try {
-          reply(handler(parsed.data) ?? { ok: true });
+          reply(handler(parsed.data) ?? OK);
         } catch (err) {
           console.error(`[${event}]`, err);
           reply({ ok: false, error: 'Sunucu hatası' });
@@ -83,13 +92,13 @@ export function registerHandlers(io: Server) {
     on('room:join', C2S.join, d => rooms.join(pid, socket, { name: d.name, avatar: d.avatar }, d.code), limits.join);
     on('room:quick', C2S.quick, d => rooms.quick(pid, socket, d), limits.join);
     on('room:leave', C2S.empty, () => rooms.leave(pid));
-    on('room:addBot', C2S.empty, () => inRoom(r => r.addBot(pid)));
-    on('room:removeBot', C2S.seat, d => inRoom(r => r.removeBot(pid, d.seat)));
-    on('room:settings', C2S.settings, d => inRoom(r => r.updateSettings(pid, d)));
-    on('room:start', C2S.empty, () => inRoom(r => r.start(pid)));
-    on('room:decide', C2S.decide, d => rooms.decide(pid, d.playerId, d.accept));
+    on('room:addBot', C2S.empty, () => inRoom(r => r.addBot(pid)), limits.lobby);
+    on('room:removeBot', C2S.seat, d => inRoom(r => r.removeBot(pid, d.seat)), limits.lobby);
+    on('room:settings', C2S.settings, d => inRoom(r => r.updateSettings(pid, d)), limits.lobby);
+    on('room:start', C2S.empty, () => inRoom(r => r.start(pid)), limits.lobby);
+    on('room:decide', C2S.decide, d => rooms.decide(pid, d.playerId, d.accept), limits.lobby);
     on('game:action', C2S.action, d => inRoom(r => r.act(pid, d)), limits.action);
-    on('game:sync', C2S.empty, () => inRoom(r => r.sendSync(pid)));
+    on('game:sync', C2S.empty, () => inRoom(r => r.sendSync(pid)), limits.sync);
     on('chat:send', C2S.chat, d => inRoom(r => r.chat(pid, d.text)), limits.chat);
     on('emote', C2S.emote, d => inRoom(r => r.emote(pid, d.emote)));
     on('look', C2S.look, d => inRoom(r => r.look(pid, d.yaw, d.pitch)), limits.look);
