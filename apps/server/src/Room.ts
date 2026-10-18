@@ -57,6 +57,7 @@ export class Room {
   private looks = new Map<string, LookState>();
   private graceTimers = new Map<string, NodeJS.Timeout>();
   private actionTimer: NodeJS.Timeout | null = null;
+  private autoStartTimer: NodeJS.Timeout | null = null;
   private chatLog: ChatMessage[] = [];
   private lastEmote = new Map<string, number>();
 
@@ -184,6 +185,7 @@ export class Room {
 
   private destroy() {
     if (this.actionTimer) clearTimeout(this.actionTimer);
+    if (this.autoStartTimer) clearTimeout(this.autoStartTimer);
     for (const t of this.graceTimers.values()) clearTimeout(t);
     for (const id of [...this.looks.keys()]) this.clearLook(id);
     this.onEmpty(this);
@@ -227,6 +229,20 @@ export class Room {
     if (s.approval !== undefined) this.approval = s.approval;
     this.broadcastRoom();
     return { ok: true };
+  }
+
+  /**
+   * Hızlı oyun: kısa bekleme içinde Hızlı Oyun'a basan başka biri gelirse aynı masaya oturur;
+   * süre dolunca boş koltuklar botla dolar ve oyun kendiliğinden başlar.
+   */
+  autoStart(ms: number) {
+    this.system(`Oyun ${Math.round(ms / 1000)} saniye içinde botlarla başlıyor`);
+    this.autoStartTimer = setTimeout(() => {
+      this.autoStartTimer = null;
+      if (this.status !== 'lobby' || !this.hostId) return;
+      while (this.seats.includes(null) && this.addBot(this.hostId).ok);
+      this.start(this.hostId);
+    }, ms);
   }
 
   start(playerId: string): Ack {

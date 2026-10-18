@@ -4,6 +4,9 @@ import { Room } from './Room';
 
 const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
+/** Hızlı oyunda başka oyuncu beklenen süre; sonra botlarla başlanır */
+const QUICK_START_MS = 3000;
+
 export class RoomManager {
   private rooms = new Map<string, Room>();
   private byPlayer = new Map<string, Room>();
@@ -65,7 +68,9 @@ export class RoomManager {
     if (open) return this.enter(open, playerId, socket, profile);
     const room = this.createRoom(false);
     room.approval = approval;
-    return this.enter(room, playerId, socket, profile);
+    const r = this.enter(room, playerId, socket, profile);
+    if (r.ok) room.autoStart(QUICK_START_MS);
+    return r;
   }
 
   /** Kurucu bekleyen bir oyuncuyu kabul eder ya da reddeder */
