@@ -12,7 +12,7 @@ const LEVELS = [
   { id: 'hard', label: 'Zor' },
 ] as const;
 
-function Switch({ on, disabled, onToggle, label }: { on: boolean; disabled?: boolean; onToggle: () => void; label: string }) {
+export function Switch({ on, disabled, onToggle, label }: { on: boolean; disabled?: boolean; onToggle: () => void; label: string }) {
   return (
     <button className={`switch ${on ? 'on' : ''}`} role="switch" aria-checked={on} aria-label={label} disabled={disabled} onClick={onToggle}>
       <span />

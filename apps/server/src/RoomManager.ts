@@ -43,8 +43,11 @@ export class RoomManager {
     return { ok: true, code: room.code };
   }
 
-  create(playerId: string, socket: Socket, profile: Profile, isPrivate: boolean) {
-    return this.enter(this.createRoom(isPrivate), playerId, socket, profile);
+  create(playerId: string, socket: Socket, profile: Profile, isPrivate: boolean, approval = false) {
+    const room = this.createRoom(isPrivate);
+    // onay oda kurulurken açılır: kodu tahmin eden biri lobide ayar açılmadan içeri giremez
+    room.approval = approval;
+    return this.enter(room, playerId, socket, profile);
   }
 
   join(playerId: string, socket: Socket, profile: Profile, code: string): Ack<{ code: string }> {

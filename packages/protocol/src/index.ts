@@ -47,7 +47,7 @@ export const ProfileSchema = z.object({
 export type Profile = z.infer<typeof ProfileSchema>;
 
 export const C2S = {
-  create: ProfileSchema.extend({ isPrivate: z.boolean() }),
+  create: ProfileSchema.extend({ isPrivate: z.boolean(), approval: z.boolean().optional() }),
   join: ProfileSchema.extend({ code: z.string().trim().toUpperCase().length(5) }),
   quick: ProfileSchema,
   settings: z.object({
