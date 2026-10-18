@@ -56,10 +56,16 @@ export class RoomManager {
     return this.enter(room, playerId, socket, profile);
   }
 
-  /** Hızlı oyun: boş koltuğu olan herkese açık bir lobiye oturtur, yoksa yeni oda açar */
-  quick(playerId: string, socket: Socket, profile: Profile) {
+  /**
+   * Hızlı oyun: boş koltuğu olan herkese açık bir lobiye oturtur, yoksa yeni oda açar.
+   * Yeni açılan odada katılma onayı istenmişse uygulanır; onaylı odalar eşleşmeye girmez.
+   */
+  quick(playerId: string, socket: Socket, profile: Profile, approval = false) {
     const open = [...this.rooms.values()].find(r => !r.isPrivate && !r.approval && r.status === 'lobby' && !r.isFull && !r.has(playerId));
-    return this.enter(open ?? this.createRoom(false), playerId, socket, profile);
+    if (open) return this.enter(open, playerId, socket, profile);
+    const room = this.createRoom(false);
+    room.approval = approval;
+    return this.enter(room, playerId, socket, profile);
   }
 
   /** Kurucu bekleyen bir oyuncuyu kabul eder ya da reddeder */

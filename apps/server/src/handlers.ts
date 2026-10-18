@@ -90,7 +90,7 @@ export function registerHandlers(io: Server) {
 
     on('room:create', C2S.create, d => rooms.create(pid, socket, { name: d.name, avatar: d.avatar }, d.isPrivate, d.approval ?? false), limits.join);
     on('room:join', C2S.join, d => rooms.join(pid, socket, { name: d.name, avatar: d.avatar }, d.code), limits.join);
-    on('room:quick', C2S.quick, d => rooms.quick(pid, socket, d), limits.join);
+    on('room:quick', C2S.quick, d => rooms.quick(pid, socket, { name: d.name, avatar: d.avatar }, d.approval ?? false), limits.join);
     on('room:leave', C2S.empty, () => rooms.leave(pid));
     on('room:addBot', C2S.empty, () => inRoom(r => r.addBot(pid)), limits.lobby);
     on('room:removeBot', C2S.seat, d => inRoom(r => r.removeBot(pid, d.seat)), limits.lobby);

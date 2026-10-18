@@ -68,13 +68,13 @@ export function HomeScreen() {
         <div className="setting-row">
           <div>
             <span className="setting-title">Katılma onayı</span>
-            <span className="setting-hint">Özel odana kod ile gelenleri sen kabul edersin</span>
+            <span className="setting-hint">Kurduğun odaya gelenleri sen kabul edersin</span>
           </div>
           <Switch label="Katılma onayı" on={approval} onToggle={toggleApproval} />
         </div>
 
         <div className="actions">
-          <button className="btn primary big" disabled={busy || !connected} onClick={() => go('room:quick')}>
+          <button className="btn primary big" disabled={busy || !connected} onClick={() => go('room:quick', { approval })}>
             Hızlı Oyun
           </button>
           <button className="btn" disabled={busy || !connected} onClick={() => go('room:create', { isPrivate: true, approval })}>
