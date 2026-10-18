@@ -12,7 +12,8 @@ import { NameTag } from '../ui/NameTag';
 import { ANIMATIONS, REACTION_CLIPS, REACTION_FACE, ROBOT_URL, type CharacterDef } from './characters';
 import { useCharacterScene } from './characterModel';
 import { SafeBoundary } from './SafeBoundary';
-import { bodyPenetration, buildRig, poseGrip, rotateBoneInBodySpace, setMorph, solveArmIK, type MorphKey, type Rig } from './rig';
+import { addClips, bodyPenetration, buildRig, poseGrip, rotateBoneInBodySpace, setMorph, solveArmIK, type MorphKey, type Rig } from './rig';
+import { PERF_HOOKS } from './perfHooks';
 import type { Thrower } from '../game/director';
 
 /** Oturan karakterin kalçasının hedefi (koltuk çerçevesinde): sandalye oturağının ortası */
@@ -80,20 +81,51 @@ const isJson = (url: string) => /\.json(\?|$)/i.test(url);
 const JSON_NAMES = Object.keys(ANIMATIONS).filter(n => isJson(ANIMATIONS[n]));
 const FBX_NAMES = Object.keys(ANIMATIONS).filter(n => !isJson(ANIMATIONS[n]));
 
+/** karakterin görünmesi için beklenen klipler (oturma döngüsü); gerisi arka planda iner */
+const CORE_NAMES = JSON_NAMES.filter(n => /^idle/i.test(n));
+const EXTRA_NAMES = JSON_NAMES.filter(n => !/^idle/i.test(n));
+
 function useMixamoClips() {
-  // tüm animasyonlar bir kez yüklenir ve bütün Mixamo karakterlerinde ortak kullanılır
-  const texts = useLoader(THREE.FileLoader, JSON_NAMES.map(n => ANIMATIONS[n])) as string[];
+  // oturma klipleri bir kez yüklenir ve bütün Mixamo karakterlerinde ortak kullanılır
+  const texts = useLoader(THREE.FileLoader, CORE_NAMES.map(n => ANIMATIONS[n])) as string[];
   const groups = useLoader(FBXLoader, FBX_NAMES.map(n => ANIMATIONS[n])) as THREE.Group[];
-  return useMemo(() => {
-    const clips = [
-      ...texts.map((t, i) => ({ name: JSON_NAMES[i], clip: THREE.AnimationClip.parse(JSON.parse(t)) })),
-      ...groups.map((g, i) => ({ name: FBX_NAMES[i], clip: g.animations[0] })).filter(c => c.clip),
-    ];
-    alignHips(clips);
-    // sürekli dönen klipler (oturma, konuşma) döngü sınırında sıçramasın
-    for (const c of clips) if (/^(idle|talk)/i.test(c.name)) makeSeamless(c.clip);
+  return useMemo(() => buildClips(texts, groups), [texts, groups]);
+}
+
+type NamedClip = { name: string; clip: THREE.AnimationClip };
+let clipCache: { texts: string[]; groups: THREE.Group[]; clips: NamedClip[] } | null = null;
+
+/**
+ * Klipler bir kez ayrıştırılır ve bütün karakterlerde ortak kullanılır: 4.8 MB'lık animasyon verisini
+ * her karakter için yeniden ayrıştırmak oyun açılışında karakterlerin geç görünmesine yol açıyordu.
+ */
+export function buildClips(texts: string[], groups: THREE.Group[]): NamedClip[] {
+  const c = clipCache;
+  if (c && c.texts.length === texts.length && c.texts.every((t, i) => t === texts[i]) && c.groups.every((g, i) => g === groups[i])) return c.clips;
+  const clips = [
+    ...texts.map((t, i) => ({ name: CORE_NAMES[i], clip: THREE.AnimationClip.parse(JSON.parse(t)) })),
+    ...groups.map((g, i) => ({ name: FBX_NAMES[i], clip: g.animations[0] })).filter(c => c.clip),
+  ];
+  alignHips(clips);
+  // sürekli dönen klipler (oturma, konuşma) döngü sınırında sıçramasın
+  for (const c of clips) if (/^(idle|talk)/i.test(c.name)) makeSeamless(c.clip);
+  clipCache = { texts, groups, clips };
+  return clips;
+}
+
+let extraClips: Promise<NamedClip[]> | null = null;
+
+/** tepki ve konuşma klipleri: bir kez iner ve ayrıştırılır, oturma döngüsüne göre hizalanır */
+function loadExtraClips(core: NamedClip[]): Promise<NamedClip[]> {
+  extraClips ??= Promise.all(EXTRA_NAMES.map(n => new THREE.FileLoader().loadAsync(ANIMATIONS[n]) as Promise<string>)).then(texts => {
+    const clips = texts.map((t, i) => ({ name: EXTRA_NAMES[i], clip: THREE.AnimationClip.parse(JSON.parse(t)) }));
+    const idle = core.find(c => c.name === 'idle');
+    // hizalama oturma klibine göre yapılır; oturma klibinin kendisi değişmesin diye kopyası verilir
+    alignHips(idle ? [{ name: 'idle', clip: idle.clip.clone() }, ...clips] : clips);
+    for (const c of clips) if (/^talk/i.test(c.name)) makeSeamless(c.clip);
     return clips;
-  }, [texts, groups]);
+  });
+  return extraClips;
 }
 
 /**
@@ -322,6 +354,15 @@ function MixamoAvatar({ def, ...props }: Props & { def: CharacterDef }) {
     () => buildRig(fbx, clips, { kind: 'mixamo', targetHeight: SIT.mixamo.height, neckHeight: SIT.mixamo.neck }),
     [fbx, clips],
   );
+  useEffect(() => {
+    let alive = true;
+    loadExtraClips(clips)
+      .then(extra => alive && addClips(rig, extra))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [rig, clips]);
   return <LivingCharacter rig={rig} forward={SIT.mixamo.forward} lift={SIT.mixamo.lift} {...props} />;
 }
 
@@ -374,7 +415,8 @@ function LivingCharacter({
     offscreen: false,
     seed: Math.random() * 100,
   });
-  const face = useRef<Partial<Record<MorphKey, number>>>({});
+  // ifade ağırlıkları baştan sıfırla tanımlı: gsap var olmayan bir özelliği canlandırırken uyarı verir
+  const face = useRef<Partial<Record<MorphKey, number>>>({ happy: 0, angry: 0, sad: 0, surprised: 0 });
   /** modelin ayaklarını zemine oturtan yükseklik (buildRig); ayakta kaldırma bunun üstüne eklenir */
   const rootBaseY = useMemo(() => rig.root.position.y, [rig]);
   // her karakterin kendi kıpırdanma seti ve temposu: aynı karakterler aynı hareketleri yapmasın
@@ -511,7 +553,7 @@ function LivingCharacter({
 
   // geliştirme: animasyonları tek tek incelemek için window.__avatars[oyuncu] üzerinden klip oynatılır
   useEffect(() => {
-    if (!import.meta.env.DEV) return;
+    if (!import.meta.env.DEV && !PERF_HOOKS) return;
     const w = window as unknown as { __avatars?: Record<string, unknown> };
     w.__avatars ??= {};
     w.__avatars[seat.playerId] = {
@@ -664,7 +706,8 @@ function LivingCharacter({
 
     // --- sandalyeye oturtma: animasyonlar başka bir karakterden geldiği için bacak boyu farkı kalçayı
     // havada bırakabilir ya da sandalyeye gömebilir. Oturma döngüsündeyken kalça sandalyenin ortasına çekilir.
-    if (bodyGroup && gg && rig.bones.hips && !st.reacting && st.base === rig.idle) {
+    // ilk karede tepki oynuyor olsa bile oturtulur: yoksa karakter tepki bitene kadar (1–2 sn) görünmez kalıyordu
+    if (bodyGroup && gg && rig.bones.hips && ((!st.reacting && st.base === rig.idle) || !st.seated)) {
       const h = tmpV.hipsL;
       const ks = st.seated ? Math.min(1, dt * 1.5) : 1; // ilk karede doğrudan otur, sonra yumuşak düzelt
       bodyGroup.position.y += (SEAT_HIPS.y - h.y) * ks;
@@ -989,8 +1032,6 @@ function LivingCharacter({
         <primitive object={rig.root} />
       </group>
       <primitive object={anchor} />
-      {/* sadece sırası gelen karakter ayrıca aydınlatılır: her ışık her pikselin maliyetini artırır */}
-      {isCurrent && quality === 'high' && <pointLight position={[0, 1.3, 0.65]} color="#fff3d6" intensity={1.6} distance={1.7} decay={2} />}
       <Html position={[0, 1.62, 0]} center distanceFactor={4.5} zIndexRange={[20, 0]}>
         <NameTag seat={seat} isCurrent={isCurrent} />
       </Html>

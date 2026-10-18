@@ -294,7 +294,7 @@ export function CloudSea({ y, radius = SKY_R - 2, speed = 0.4, cover = 0.6, sun,
       new THREE.ShaderMaterial({
         transparent: false,
         fog: false,
-        defines: { OCTAVES: quality === 'low' ? 3 : 5 },
+        defines: { OCTAVES: quality === 'high' ? 4 : 3 },
         uniforms: {
           uTime: { value: 0 },
           uSpeed: { value: speed },

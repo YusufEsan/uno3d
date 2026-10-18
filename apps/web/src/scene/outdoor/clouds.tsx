@@ -31,8 +31,8 @@ export function CloudsEnv({ theme, quality }: { theme: Theme; quality: QualityLe
     const n = low ? 9 : 16;
     return Array.from({ length: n }, (_, i) => {
       const a = (i / n) * Math.PI * 2 + r() * 0.2;
-      const d = 2.75 + r() * 0.9;
-      return { p: [Math.cos(a) * d, -0.25 + r() * 0.2, Math.sin(a) * d] as [number, number, number], b: [1.3, 0.35, 1.3] as [number, number, number], seed: i + 7 };
+      const d = 3.3 + r() * 0.9;
+      return { p: [Math.cos(a) * d, -0.5 + r() * 0.15, Math.sin(a) * d] as [number, number, number], b: [1.0, 0.25, 1.0] as [number, number, number], seed: i + 7 };
     });
   }, [low]);
   const towers = useMemo(() => {
@@ -69,10 +69,8 @@ export function CloudsEnv({ theme, quality }: { theme: Theme; quality: QualityLe
       <SoftClouds limit={low ? 140 : 320}>
         {/* adanın kabarık kenarı */}
         {rim.map((c, i) => (
-          <Cloud key={`r${i}`} position={c.p} bounds={c.b} segments={low ? 4 : 7} volume={1.6} seed={c.seed} fade={2} growth={0.6} speed={0.08} opacity={0.95} />
+          <Cloud key={`r${i}`} position={c.p} bounds={c.b} segments={low ? 4 : 7} volume={0.9} seed={c.seed} fade={4} growth={0.3} speed={0.08} opacity={0.95} />
         ))}
-        {/* adanın altı */}
-        <Cloud position={[0, -1.6, 0]} bounds={[2.4, 0.8, 2.4]} segments={low ? 6 : 12} volume={3.2} seed={3} fade={3} growth={1} speed={0.06} />
         {/* uzakta yükselen kümülüs kuleleri */}
         {towers.map((c, i) => (
           <Cloud key={`t${i}`} position={c.p} bounds={c.b} segments={low ? 8 : 16} volume={9} seed={c.seed} fade={40} growth={3} speed={0.05} />

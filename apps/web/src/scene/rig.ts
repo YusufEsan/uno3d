@@ -252,6 +252,26 @@ export function buildRig(
   return { root, mixer, actions, idle, idleVariants, talk, talks, bones, fingers, bindPose, morphs, height: opts.targetHeight, proxies, handSize };
 }
 
+/**
+ * Sonradan inen klipleri hazır bir iskelete ekler (tepki ve konuşma animasyonları arka planda iner: karakter
+ * yalnız oturma döngüsünü bekleyip hemen görünür). Konuşma ve oturma çeşitleri listesi de güncellenir.
+ */
+export function addClips(rig: Rig, clips: { name: string; clip: THREE.AnimationClip }[]) {
+  let hips: THREE.Object3D | undefined;
+  rig.root.traverse(o => {
+    if (!hips && (o as THREE.Bone).isBone && /hips$/i.test(o.name)) hips = o;
+  });
+  const prefix = hips ? hips.name.slice(0, -4) : '';
+  for (const { name, clip } of clips) {
+    if (rig.actions[name]) continue;
+    const a = rig.mixer.clipAction(retarget(clip, prefix, name));
+    rig.actions[name] = a;
+    if (/^talk(ing)?\d*$/i.test(name)) rig.talks.push(a);
+    else if (/^idle/i.test(name)) rig.idleVariants.push(a);
+  }
+  rig.talk ??= rig.talks[0] ?? null;
+}
+
 /** çarpışma şekli çıkarılan kemikler ve şeklin uzandığı alt kemik */
 const PROXY_BONES: [RegExp, RegExp][] = [
   [/hips$/i, /spine$/i],

@@ -13,6 +13,7 @@ import { CHARACTERS, assignCharacters } from './characters';
 import { useCharacterScene } from './characterModel';
 import { Chair } from './Chair';
 import { Room3D } from './Room3D';
+import { PERF_HOOKS } from './perfHooks';
 import { THEMES } from './themes';
 
 // r3f 9.x (son sürüm dahil) kendi saatini hâlâ THREE.Clock ile kuruyor; bizim kodumuz Clock kullanmıyor.
@@ -28,17 +29,77 @@ THREE.setConsoleFunction((type, message, ...params) => {
  * Tüm Mixamo karakterlerini görünmez bir köşede bir kez derler (gl.compile). Sahnedeki malzeme
  * ve ışık kombinasyonlarının shader'ları böylece oyun başlamadan hazır olur.
  */
+/**
+ * three.js bir nesnenin shader'ını ve dokusunu o nesne ekrana ilk girdiğinde hazırlar: kamera dönünce yeni
+ * görünen her nesne o karede derlenir ve oyun takılır (yavaş ekran kartlarında saniyelerce). Tema açılınca ve
+ * modeller indikçe sahnenin tamamı arka planda derlenir (paralel derleme) ve dokular önceden yüklenir.
+ */
+const uploaded = new WeakSet<THREE.Texture>();
+function SceneWarmup() {
+  const gl = useThree(s => s.gl);
+  const scene = useThree(s => s.scene);
+  const camera = useThree(s => s.camera);
+  const theme = useApp(s => s.room?.theme ?? 'meyhane');
+  const quality = useQuality();
+  const target = useMemo(() => new THREE.WebGLRenderTarget(1, 1), []);
+  useEffect(() => () => target.dispose(), [target]);
+  useEffect(() => {
+    let alive = true;
+    const run = () => {
+      if (!alive) return;
+      scene.traverse(o => {
+        const m = (o as THREE.Mesh).material;
+        if (!m) return;
+        for (const mat of Array.isArray(m) ? m : [m])
+          for (const v of Object.values(mat)) {
+            const t = v as THREE.Texture;
+            if (t && t.isTexture && t.image && !uploaded.has(t)) {
+              uploaded.add(t);
+              gl.initTexture(t);
+            }
+          }
+      });
+      // efekt zinciri açıkken sahne bir ara hedefe çizilir (doğrusal renk, ton eşleme yok): shader'lar aynı
+      // değişkeyle derlensin diye derleme de bir ara hedefle yapılır
+      const prev = gl.getRenderTarget();
+      gl.setRenderTarget(quality === 'low' ? null : target);
+      gl.compileAsync(scene, camera).catch(() => {});
+      gl.setRenderTarget(prev);
+    };
+    // hazır modeller ayrı ayrı iner: birkaç kez tekrarlanır (derlenmiş olanlar atlanır)
+    const timers = [250, 1500, 4000, 9000].map(ms => window.setTimeout(run, ms));
+    return () => {
+      alive = false;
+      timers.forEach(clearTimeout);
+    };
+  }, [gl, scene, camera, theme, quality, target]);
+  return null;
+}
+
 function ShaderWarmup() {
   const gl = useThree(s => s.gl);
   const scene = useThree(s => s.scene);
   const camera = useThree(s => s.camera);
   const group = useRef<THREE.Group>(null);
   const [done, setDone] = useState(false);
+  const quality = useQuality();
   const models = CHARACTERS.filter(c => c.kind === 'mixamo').map(c => useCharacterScene(c.url));
   useEffect(() => {
     const g = group.current;
     if (!g) return;
-    gl.compile(scene, camera);
+    // karakter dokuları ekran kartına şimdiden yüklenir: ilk görünüşte takılmasın
+    g.traverse(o => {
+      const m = (o as THREE.Mesh).material;
+      if (!m) return;
+      for (const mat of Array.isArray(m) ? m : [m])
+        for (const v of Object.values(mat)) if ((v as THREE.Texture)?.isTexture) gl.initTexture(v as THREE.Texture);
+    });
+    // efekt zinciri açıkken karakterler ara hedefe çizilir: aynı shader değişkesi derlensin
+    const prev = gl.getRenderTarget();
+    const rt = new THREE.WebGLRenderTarget(1, 1);
+    gl.setRenderTarget(quality === 'low' ? null : rt);
+    gl.compileAsync(scene, camera).finally(() => rt.dispose());
+    gl.setRenderTarget(prev);
     // derleme bitti: modeller sahneden çıkarılır (r3f primitive'leri dispose etmez, kaynaklar kalır);
     // görünmez olsalar da her karede yüzlerce kemiğin matrisi güncelleniyordu
     g.visible = false;
@@ -70,6 +131,11 @@ export function GameCanvas() {
       // antialias kapalı: yüksek/ortada kenar yumuşatma efekt zincirinin MSAA'sıyla yapılır, tuvalin kendi
       // MSAA tamponu her karede boşuna çözülüyordu. alpha kapalı: tuval opak, tarayıcı sayfayla harmanlamaz.
       gl={{ antialias: false, alpha: false, powerPreference: 'high-performance', toneMapping: THREE.NeutralToneMapping }}
+      // shader hata denetimi her derlemede GPU'yu bekletir (derleme paralel yapılamaz, karakterler ve temalar
+      // açılırken yüzlerce ms takılma); geliştirmede açık kalır
+      onCreated={({ gl }) => {
+        gl.debug.checkShaderErrors = import.meta.env.DEV && !(window as unknown as { __perf?: boolean }).__perf;
+      }}
       onPointerDown={e => {
         if (e.button === 0) director.click();
       }}
@@ -85,6 +151,7 @@ export function GameCanvas() {
         <ShaderWarmup />
       </Suspense>
       <Seats />
+      <SceneWarmup />
       <primitive object={director.root} />
       {/* elindeki kartlar lamba konisinin dışında kalıyor: önlerine yumuşak bir dolgu ışığı */}
       <pointLight position={[0, 1.32, SEAT_R - 0.18]} color="#fff1dc" intensity={0.7} distance={1.1} decay={2} />
@@ -290,7 +357,7 @@ function DirectorDriver() {
     director.update(Math.min(dt, 0.05), state.camera, state.pointer, active.current);
   });
   const scene = useThree(s => s.scene);
-  if (import.meta.env.DEV) Object.assign(window, { __scene: scene, __app: useApp, __director: director });
+  if (import.meta.env.DEV || PERF_HOOKS) Object.assign(window, { __scene: scene, __gl: gl, __app: useApp, __director: director });
   return null;
 }
 
@@ -431,6 +498,7 @@ function EndCelebration() {
 
 function Seats() {
   const room = useApp(s => s.room);
+  const quality = useQuality();
   const you = useApp(s => s.playerId);
   const currentId = useApp(s => s.view?.currentPlayerId ?? null);
   const ended = useApp(s => s.view?.phase === 'ended');
@@ -450,8 +518,14 @@ function Seats() {
     return currentIdx === 0 ? new THREE.Vector3(0, EYE_HEIGHT, SEAT_R) : headPos(currentIdx, n).setY(1.5);
   };
 
+  // sırası gelenin ışığı: tek ve hep sahnede duran bir ışık koltuğa taşınır, gerekmediğinde sönük kalır.
+  // Işık sayısı değişirse three.js bütün malzemelerin shader'ını yeniden derler (saniyelerce donma)
+  const turnLight = currentIdx > 0 && !ended ? seatFrame(currentIdx, n) : null;
+  const turnPos = turnLight ? new THREE.Vector3(0, 1.3, 0.65).applyQuaternion(turnLight.quat).add(turnLight.pos) : new THREE.Vector3(0, 1.3, 0);
+
   return (
     <>
+      <pointLight position={turnPos} color="#fff3d6" intensity={turnLight && quality === 'high' ? 1.6 : 0} distance={1.7} decay={2} />
       {seats.map(seat => {
         const idx = order.indexOf(seat.playerId);
         const f = seatFrame(Math.max(0, idx), n);

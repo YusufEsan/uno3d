@@ -17,7 +17,10 @@ export async function preloadScene() {
   if (started) return;
   started = true;
   // masa ve sandalye de sayılır; temaya özgü küçük dekor modelleri sahne açılınca arka planda iner
-  const urls = Array.from(new Set([...Object.values(ANIMATIONS), ...CHARACTERS.filter(c => c.kind === 'mixamo').map(c => c.url), MODELS.table, MODELS.chair]));
+  // önce yalnız karakterlerin görünmesi için gerekenler (oturma klipleri, modeller); tepki animasyonları sonra
+  const isCore = (n: string) => !/\.json(\?|$)/i.test(ANIMATIONS[n]) || /^idle/i.test(n);
+  const extraUrls = Object.keys(ANIMATIONS).filter(n => !isCore(n)).map(n => ANIMATIONS[n]);
+  const urls = Array.from(new Set([...Object.keys(ANIMATIONS).filter(isCore).map(n => ANIMATIONS[n]), ...CHARACTERS.filter(c => c.kind === 'mixamo').map(c => c.url), MODELS.table, MODELS.chair]));
   let done = 0;
   // önce ağ: dosyalar tarayıcı önbelleğine iner, ilerleme sayılır
   await Promise.all(
@@ -32,7 +35,11 @@ export async function preloadScene() {
     ),
   );
   // sonra ayrıştırma: R3F önbelleğine alınır (önbellekten hızlı gelir)
-  const jsonUrls = Object.values(ANIMATIONS).filter(u => /\.json(\?|$)/i.test(u));
+  // karakterler yalnız oturma kliplerini bekler (Avatar'daki CORE_NAMES ile aynı sıra); diğer klipler
+  // yukarıda tarayıcı önbelleğine indi, karakter görününce oradan ayrıştırılır
+  const jsonUrls = Object.keys(ANIMATIONS)
+    .filter(n => /\.json(\?|$)/i.test(ANIMATIONS[n]) && /^idle/i.test(n))
+    .map(n => ANIMATIONS[n]);
   const fbxUrls = Object.values(ANIMATIONS).filter(u => !/\.json(\?|$)/i.test(u));
   useLoader.preload(THREE.FileLoader, jsonUrls);
   useLoader.preload(FBXLoader, fbxUrls);
@@ -52,6 +59,8 @@ export async function preloadScene() {
     new Promise(r => setTimeout(r, 8000)),
   ]);
   useApp.setState({ assetsReady: true });
+  // geri kalan animasyonlar arka planda tarayıcı önbelleğine iner
+  for (const u of extraUrls) void fetch(u).catch(() => undefined);
 }
 
 /**
