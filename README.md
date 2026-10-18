@@ -34,7 +34,7 @@ Tarayıcıda oynanan, 3D bir masada geçen online UNO. Karakterler gerçek anima
 - 👋 **Emote'lar.** El salla, gül, alkışla, masaya vur, dans et... Karakterin animasyonu masadaki herkese görünür.
 - 🎙️ **Sesli sohbet ve yazılı sohbet.** Mikrofonu aç, konuşan oyuncunun ağzı hareket eder.
 - 🏝️ **10 farklı masa teması.** Loş bir meyhaneden bulutların üstüne, uçağın kanadından tekne gezisine kadar.
-- ⚙️ **Ev kuralları.** +2 / +4 üst üste atılabilir (ceza birikir), yeni gelenlerin odaya katılmasını oda sahibi onaylar; her hamle için 30 saniye süre vardır.
+- ⚙️ **Ev kuralları.** +2 / +4 üst üste atılabilir (ceza birikir), yeni gelenlerin odaya katılmasını oda sahibi onaylar (giriş ekranından oda kurulmadan önce açılır); her hamle için 30 saniye süre vardır.
 - 🚀 **Akıcı.** Grafik kalitesi cihaza göre otomatik ayarlanır; modeller ve gökyüzü ana ekrandayken arka planda yüklenir.
 
 ---
@@ -43,7 +43,7 @@ Tarayıcıda oynanan, 3D bir masada geçen online UNO. Karakterler gerçek anima
 
 ### 1. Adını yaz, masaya otur
 
-Ana ekranda adını yaz. **Hızlı Oyun** seni hazır bir masaya oturtur, **Özel Oda Kur** sadece senin ve arkadaşlarının olduğu bir oda açar. Arkadaşından gelen oda koduyla **Katıl** da diyebilirsin.
+Ana ekranda adını yaz. **Hızlı Oyun** seni hazır bir masaya oturtur, **Özel Oda Kur** sadece senin ve arkadaşlarının olduğu bir oda açar. Arkadaşından gelen oda koduyla **Katıl** da diyebilirsin. **Katılma onayı** açıksa, özel odana kodla gelenler sen kabul etmeden masaya oturamaz.
 
 ![Ana ekran](docs/screenshots/home.webp)
 
