@@ -29,7 +29,7 @@ export function GameHud() {
     const onKey = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement).tagName === 'INPUT') return;
       const emote = EMOTES.find(x => x.key === e.key);
-      if (emote) socket.emit('emote', { emote: emote.id });
+      if (emote) sendEmote(emote.id);
       else if (e.key === 'd' && canDraw) drawCard();
       else if (e.key === 'p' && canPass) passTurn();
       else if (e.key === 'v') void voice.toggleMic();
@@ -133,7 +133,10 @@ const TopBar = memo(function TopBar() {
       </button>
       <button
         className={`icon-btn watch ${watchSelf ? 'on' : ''}`}
-        onClick={() => useApp.setState({ watchSelf: !watchSelf })}
+        onClick={() => {
+          autoSelfView = false;
+          useApp.setState({ watchSelf: !watchSelf });
+        }}
         title={watchSelf ? 'Oyun görünümüne dön' : 'Kendimi izle'}
         aria-label={watchSelf ? 'Oyun görünümüne dön' : 'Kendimi izle'}
         aria-pressed={watchSelf}
@@ -219,11 +222,31 @@ const HandTools = memo(function HandTools() {
   );
 });
 
+let selfViewTimer = 0;
+let autoSelfView = false;
+/**
+ * Emote animasyonu kendi karakterinde oynar; birinci şahısta kendi gövden gizli olduğu için
+ * animasyon süresince kamera kendini izleme görünümüne geçer, bitince geri döner.
+ * Oyuncu "Kendimi izle"yi kendisi açtıysa ona dokunulmaz.
+ */
+function sendEmote(id: string) {
+  socket.emit('emote', { emote: id });
+  const st = useApp.getState();
+  if (st.view?.phase !== 'playing' || (st.watchSelf && !autoSelfView)) return;
+  autoSelfView = true;
+  useApp.setState({ watchSelf: true });
+  clearTimeout(selfViewTimer);
+  selfViewTimer = window.setTimeout(() => {
+    if (autoSelfView && useApp.getState().watchSelf) useApp.setState({ watchSelf: false });
+    autoSelfView = false;
+  }, id === 'dance' ? 7000 : 4500);
+}
+
 const EmoteBar = memo(function EmoteBar() {
   return (
     <div className="emotes">
       {EMOTES.map(e => (
-        <button key={e.id} className="emote" title={`${e.label} (${e.key})`} onClick={() => socket.emit('emote', { emote: e.id })}>
+        <button key={e.id} className="emote" title={`${e.label} (${e.key})`} onClick={() => sendEmote(e.id)}>
           <span className="emote-label">{e.label}</span>
           <kbd>{e.key}</kbd>
         </button>

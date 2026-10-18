@@ -50,7 +50,7 @@ interface AppState {
    * aboneleri yalnızca yeni bir oyuncu ilk kez bakış gönderince haber alır. useFrame içinde okunmalı.
    */
   looks: Record<string, { yaw: number; pitch: number }>;
-  reactions: Record<string, { name: ReactionName; n: number; manual?: boolean }>;
+  reactions: Record<string, { name: ReactionName; n: number; manual?: boolean; at: number }>;
   pendingWild: Card | null;
   toast: { text: string; n: number } | null;
   micOn: boolean;
@@ -111,7 +111,7 @@ export const useApp = create<AppState>()(set => ({
   fps: 0,
 
   react: (playerId, name, manual = false) =>
-    set(s => ({ reactions: { ...s.reactions, [playerId]: { name, n: ++reactionCounter, manual } } })),
+    set(s => ({ reactions: { ...s.reactions, [playerId]: { name, n: ++reactionCounter, manual, at: Date.now() } } })),
   showToast: text => set({ toast: { text, n: Date.now() } }),
 }));
 

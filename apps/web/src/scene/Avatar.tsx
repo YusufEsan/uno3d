@@ -593,7 +593,8 @@ function LivingCharacter({
   // emote ve oyun tepkileri
   const reaction = useApp(s => s.reactions[seat.playerId]);
   useEffect(() => {
-    if (!reaction) return;
+    // karakter sonradan görünür olunca (ör. kendini izle) eski tepki yeniden oynamasın
+    if (!reaction || Date.now() - reaction.at > 1500) return;
     const st = state.current;
     // kutlamada bazen ayağa kalkıp sevinir
     // oyun olayları yalnız yüz ifadesi verir; vücut animasyonunu oyuncu emote ile tetikler
